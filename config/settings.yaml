@@ -1,0 +1,21 @@
+# BTC Al/Sat Sinyal ve Backtest Sistemi - Ana Konfigürasyon
+#
+# Bu dosyadaki değerleri değiştirerek kodu hiç dokunmadan davranışı
+# değiştirebilirsiniz (zaman dilimi, veri kaynağı, risk limitleri vb.).
+
+data:
+  exchange: okx                          # ccxt borsa id'si (kullanıcı OKX üzerinden işlem yapıyor)
+  symbol: BTC/USDT
+  timeframe: 1h                          # ccxt formatı: 1m, 5m, 15m, 1h, 4h, 1d ...
+  history_start: "2020-01-01T00:00:00Z"  # ne kadar geriye gidileceği (borsanın izin verdiği kadar)
+  cache_dir: data/raw                    # ham/temizlenmiş veri cache'i (parquet)
+  processed_dir: data/processed          # işlenmiş çıktı (csv, insan tarafından incelenebilir)
+  max_retries: 5                         # geçici ağ hatalarında yeniden deneme sayısı
+  retry_backoff_seconds: 2               # yeniden denemeler arası bekleme (exponential backoff'un tabanı)
+
+# Aşağıdaki bölümler sonraki adımlarda (indikatörler, strateji, backtest, risk
+# yönetimi) doldurulacak. Şimdilik yer tutucu olarak boş bırakıldı.
+indicators: {}
+strategy: {}
+backtest: {}
+risk: {}

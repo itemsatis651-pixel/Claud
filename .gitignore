@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Çekilen/işlenmiş piyasa verisi repo'ya commit edilmez (büyük ve tekrar üretilebilir)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+.env
