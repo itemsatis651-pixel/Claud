@@ -43,16 +43,29 @@ Kaynaklar:
   araştırmadaki "yalnızca orta hat üzerindeyken long al" önerisini uygular,
   amaç düşüş trendindeki yanlış breakout'ları (whipsaw) azaltmak.
 
-## Parametreler hakkında dürüstlük notu
+## Parametreler hakkında dürüstlük notu (ve düzeltilen bir hata)
 
-`entry_period=55`, `exit_period=20` klasik "Turtle Trading System 2"
-parametreleridir (orijinali GÜNLÜK barlar için). Burada SAATLİK barlara
-uygulanıyor - bu, aynı "kaç günlük fiyat hareketi" mantığını birebir
-korumaz (55 saat ≈ 2.3 gün, günlük sistemde 55 gün ≈ 2.5 ay). Bu parametreler
-bu veri setine göre OPTİMİZE EDİLMEDİ (overfitting'den kaçınmak için
-bilinçli tercih) - literatürden alınan başlangıç noktalarıdır. Adım 4'teki
-walk-forward backtest'te bu haliyle test edilecek; sonuç kötüyse parametre
-taraması yapmak yerine önce zaman dilimi/temel mantığı sorgulayacağız.
+`entry_period`/`exit_period`/`trend_filter_period` klasik "Turtle Trading
+System 2" (55/20 gün) ve yaygın "200 günlük SMA" trend filtresinden
+esinlenildi - **ama bunlar GÜNLÜK bar sayılarıdır**. İlk implementasyonda bu
+sayılar (55, 20, 200) birebir SAATLİK bar sayısı olarak kullanılmıştı - bu
+bir birim ölçeklendirme hatasıydı (55 saat ≈ 2.3 gün, oysa literatürdeki
+sistem 55 GÜNLÜK bir pencereyi kastediyor). Bu haliyle adım 4'teki ilk
+backtest'te gerçek veride **-2.25% toplam getiri** (Buy&Hold: +977%) çıktı -
+whipsaw'a çok açık, neredeyse rastgele bir sistem gibi davrandı (profit
+factor ≈ 1.00).
+
+Hata fark edilip saatlik karşılıklarıyla düzeltildi: `entry_period=1320`
+(55 gün × 24 saat), `exit_period=480` (20 gün × 24 saat),
+`trend_filter_period=4800` (200 gün × 24 saat - zaten rejim
+sınıflandırmasında kullanılan pencereyle aynı). **Bu bir "backtest'e göre
+optimize etme" değil, bir birim dönüşüm düzeltmesidir** - literatürdeki
+sistemi doğru şekilde saatlik barlara uyarlamak. Düzeltilmiş sonuç adım
+4'ün raporunda (`src/backtest/README.md`) detaylandırıldı - çok daha makul
+(+644.7% getiri, Sharpe 1.04, %62.5 kazanma oranı) ama sadece **16 işlem**
+üzerine kurulu - istatistiksel örneklem küçük, bu da ayrıca not edildi.
+Bu parametreler hâlâ bu veri setine optimize EDİLMEDİ, sadece doğru
+ölçeklendirildi.
 
 ## Bilinen zayıflık (araştırmadan, dürüstçe)
 
@@ -69,7 +82,7 @@ from src.strategies.registry import register_strategy
 
 
 @register_strategy("donchian_breakout")
-def donchian_breakout_strategy(df, entry_period=55, exit_period=20, trend_filter_period=200, price_col="close"):
+def donchian_breakout_strategy(df, entry_period=1320, exit_period=480, trend_filter_period=4800, price_col="close"):
     entry_upper_col = f"donchian_{entry_period}_upper"
     exit_lower_col = f"donchian_{exit_period}_lower"
     trend_col = f"sma_{trend_filter_period}"

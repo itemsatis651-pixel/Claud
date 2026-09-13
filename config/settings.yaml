@@ -40,7 +40,7 @@ data:
 indicators:
   sma:
     enabled: true
-    windows: [20, 50, 200]
+    windows: [20, 50, 200, 4800]   # 4800 = ~200 gün (1h bar) - donchian_breakout trend filtresi için
   ema:
     enabled: true
     windows: [12, 26]
@@ -63,7 +63,7 @@ indicators:
     d_period: 3
   donchian:
     enabled: true
-    periods: [20, 55]    # exit (20) ve entry (55) için ayrı Donchian kanalları
+    periods: [480, 1320]   # exit (480=20 gün) ve entry (1320=55 gün) için ayrı Donchian kanalları (saate ölçeklendi)
 
 # Aktif strateji ve parametreleri. `active` hangi stratejinin kullanılacağını
 # seçer; o stratejinin kendi bloğu parametrelerini taşır. Yeni bir strateji
@@ -74,18 +74,37 @@ indicators:
 # kaynaklı bulgular: BTC'de trend-takip stratejileri mean-reversion'dan
 # belirgin şekilde daha dayanıklı). `macd_stochastic` de kayıtlı kalıyor
 # (plug-in mimarisi sayesinde), `active` değiştirilerek karşılaştırılabilir.
+# NOT: entry/exit/trend_filter periyotları ("Turtle System 2" 55/20 gün +
+# 200 günlük trend filtresi) SAATLİK bara doğru ölçeklendi (×24) - ilk
+# implementasyonda bu bir hataydı (55/20/200 SAAT olarak kullanılmıştı,
+# neredeyse rastgele bir sistem gibi davranmıştı). Detay: src/strategies/
+# donchian_breakout.py docstring'i ve src/backtest/README.md.
 strategy:
   active: donchian_breakout
   donchian_breakout:
-    entry_period: 55    # yukarıdaki indicators.donchian.periods ile eşleşmeli
-    exit_period: 20      # yukarıdaki indicators.donchian.periods ile eşleşmeli
-    trend_filter_period: 200   # yukarıdaki indicators.sma.windows ile eşleşmeli
+    entry_period: 1320    # 55 gün × 24 saat - yukarıdaki indicators.donchian.periods ile eşleşmeli
+    exit_period: 480      # 20 gün × 24 saat - yukarıdaki indicators.donchian.periods ile eşleşmeli
+    trend_filter_period: 4800   # 200 gün × 24 saat - yukarıdaki indicators.sma.windows ile eşleşmeli
   macd_stochastic:
     macd_prefix: macd_12_26_9      # yukarıdaki indicators.macd parametreleriyle eşleşmeli
     stoch_prefix: stoch_14_3_3     # yukarıdaki indicators.stochastic parametreleriyle eşleşmeli
     oversold: 20
     overbought: 80
 
-# Aşağıdaki bölümler sonraki adımlarda (backtest, risk yönetimi) doldurulacak.
-backtest: {}
+# Backtest motoru ayarları. Motor tek, kesintisiz bir simülasyon çalıştırır;
+# yıllık ve rejim bazlı raporlar bu simülasyonun üzerine dilimleme/gruplama
+# yaparak üretilir (bkz. src/backtest/README.md).
+backtest:
+  initial_capital: 10000
+  fee_bps: 10          # %0.10 - OKX spot taker ücreti varsayımı (VIP olmayan kullanıcı)
+  slippage_bps: 5       # %0.05 - sabit varsayım, gerçekte oynaklığa göre değişir
+  periods_per_year: 8766   # 24*365.25 - 1 saatlik bar varsayımı; timeframe değişirse burayı da değiştirin
+  out_of_sample_start: "2023-01-01T00:00:00Z"   # in-sample/out-of-sample raporlama kesimi (parametre FIT edilmedi, bkz. README)
+  regime:
+    sma_period: 4800       # ~200 gün (1h bar) - piyasa rejimi sınıflandırması için
+    slope_lookback: 720    # ~30 gün - SMA eğimini ölçmek için pencere
+    bull_threshold: 0.05   # SMA bu kadar (%5) yükseldiyse BOĞA
+    bear_threshold: -0.05  # SMA bu kadar (%5) düştüyse AYI
+
+# Sonraki adımda (risk yönetimi) doldurulacak.
 risk: {}

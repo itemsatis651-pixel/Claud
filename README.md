@@ -29,7 +29,7 @@ src/
   data/               # Veri çekme ve temizleme katmanı (bkz. src/data/README.md)
   indicators/         # Teknik indikatörler, plug-in mimarisi (bkz. src/indicators/README.md)
   strategies/         # Kural tabanlı stratejiler, plug-in mimarisi (bkz. src/strategies/README.md)
-  backtest/           # (sonraki adım) Walk-forward backtest motoru
+  backtest/           # Backtest motoru, fee/slipaj, rejim/yıllık dökümü (bkz. src/backtest/README.md)
   risk/               # (sonraki adım) Pozisyon boyutlandırma, stop-loss, kayıp limitleri
   reporting/          # (sonraki adım) Equity curve, drawdown, işlem istatistikleri
 tests/                # Her modül için birim testler
@@ -38,7 +38,7 @@ tests/                # Her modül için birim testler
 Her alt modülün kendi `README.md`'si var — aylar sonra geri dönüldüğünde
 "bu modül ne yapıyordu" sorusuna hızlı cevap vermesi için.
 
-## Mevcut durum (Adım 3/6: Temel strateji tamamlandı)
+## Mevcut durum (Adım 4/6: Backtest motoru tamamlandı)
 
 **Adım 1 — Veri Katmanı** (`src/data`): OKX'ten (kullanıcının işlem yaptığı
 borsa) 1 saatlik BTC/USDT mumlarını çeker, temizler (kopya/eksik/mantıksız
@@ -99,8 +99,29 @@ Kullanıcıyla üzerinde anlaşıldığı gibi: **Smart Money Concept** (order
 block/BOS-CHoCH/FVG) katmanı bu temel doğrulandıktan sonra üçüncü bir
 confluence bileşeni olarak eklenecek.
 
-Sıradaki adımlar: walk-forward backtest (4) → risk yönetimi (5) →
-raporlama (6).
+**Adım 4 — Backtest Motoru** (`src/backtest`): Sinyalleri gerçek işlemlere
+çeviren, fee+slipaj uygulayan, look-ahead bias'tan kaçınan (bar X+1'in
+açılışında işlem), yıllık ve piyasa rejimi (BOĞA/AYI/YATAY, veriye dayalı
+sınıflandırma) bazlı dökümü üreten motor.
+
+```bash
+python -m src.backtest.pipeline
+```
+
+**Önemli — geliştirme sırasında bir hata bulundu ve düzeltildi:**
+Donchian stratejisinin parametreleri ("Turtle System 2" 55/20 gün + 200
+günlük trend filtresi) ilk halde saate çevrilmeden kullanılmıştı. Bu haliyle
+backtest **-2.25% getiri** (Buy&Hold: +977%) verdi - neredeyse rastgele bir
+sistem. Hata (birim ölçeklendirme) düzeltildikten sonra (×24 ile saate
+çevrildi): **+644.69% getiri, Sharpe 1.04, max drawdown -33.49%, 16 işlem,
+%62.5 kazanma oranı**. Buy&Hold'u mutlak getiride hâlâ geçemedi ama çok daha
+düşük risk/drawdown ile. **İşlem sayısı (16) istatistiksel olarak küçük** -
+bu sonuçlara yüksek güvenle "çalışıyor" denemez. Tüm dürüst detaylar, yıllık
+ve rejim bazlı döküm `src/backtest/README.md`'de.
+
+Sıradaki adımlar: risk yönetimi (5) → raporlama (6). Ayrıca kullanıcıyla
+konuşulması gereken açık nokta: bu sonuçlar **referans veride** (OKX değil)
+- gerçek OKX verisiyle doğrulama hâlâ bekliyor.
 
 ## Test
 
