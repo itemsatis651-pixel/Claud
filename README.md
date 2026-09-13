@@ -52,21 +52,26 @@ python -m src.data.pipeline
 **Önemli:** Bu geliştirme ortamının ağ politikası **her türlü dış piyasa
 verisi API'sine** erişimi engelliyor (sadece OKX değil — Binance, Kraken,
 CoinGecko, Coinbase, Yahoo Finance de denendi, hepsi aynı şekilde
-engellendi). Bu yüzden canlı veri çekme burada test edilemedi; mantık mock
-veriyle birim testlerle doğrulandı (detaylar `src/data/README.md`'de).
+engellendi). Bu yüzden canlı OKX veri çekme burada test edilemedi; mantık
+mock veriyle birim testlerle doğrulandı (detaylar `src/data/README.md`'de).
 Komutu kendi makinenizde çalıştırıp gerçek veri çekildiğini teyit edin.
+
+**Sandbox'ta geliştirme için:** GitHub'a bu ortamdan erişilebildiğinden,
+`data.source: csv_url` ile MIT lisanslı, gerçek ve güncel (2020-01-01 →
+bugün, 58.728 saatlik mum, sadece 1 gap) bir BTC referans veri seti
+bootstrap edildi (`data/raw/github_btc_reference_*`). Bu **OKX verisi
+değil** — strateji/backtest geliştirmeyi gerçek fiyat hareketleriyle test
+edebilmek için geçici bir yardımcı. Detaylar ve dürüst uyarı
+`src/data/README.md`'de.
 
 **Adım 2 — İndikatörler** (`src/indicators`): SMA, EMA, RSI (Wilder),
 MACD, Bollinger Bands — hepsi sıfırdan pandas/numpy ile yazıldı (şeffaflık
-için), plug-in mimarisiyle kayıtlı, config'ten açılıp kapatılabilir.
+için), plug-in mimarisiyle kayıtlı, config'ten açılıp kapatılabilir. Gerçek
+referans veri üzerinde test edildi, sonuçlar sağlıklı.
 
 ```bash
 python -m src.indicators.pipeline
 ```
-
-Veri katmanı henüz gerçek veri üretmediği için (yukarıdaki ağ kısıtı
-nedeniyle) bu komut şu an **sentetik demo veriyle** çalışıyor — bu normal,
-modülün kendisi gerçek veriyle de aynı şekilde çalışacak.
 
 Sıradaki adımlar: basit kural tabanlı strateji (3) → walk-forward backtest
 (4) → risk yönetimi (5) → raporlama (6).

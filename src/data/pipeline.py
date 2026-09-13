@@ -13,15 +13,44 @@ from pathlib import Path
 import pandas as pd
 
 from src.data.clean import OHLCV_COLUMNS, clean_ohlcv, ohlcv_list_to_df
+from src.data.csv_source import CsvUrlDataClient
 from src.data.exchange_client import ExchangeDataClient
 from src.utils.config import load_config
 
 logger = logging.getLogger(__name__)
 
 
-def _cache_path(cache_dir, exchange_id, symbol, timeframe):
+def _cache_label(data_cfg):
+    """Cache dosya adında kullanılacak kaynak etiketi.
+
+    `source: csv_url` iken `exchange` alanıyla (gerçek işlem borsası) karışmasın
+    diye ayrı bir etiket kullanılır - aksi halde "okx" ile cache'lenmiş bir
+    dosyanın aslında GitHub'dan gelen bir CSV mi yoksa gerçek OKX API'sinden mi
+    geldiği belirsizleşir.
+    """
+    if data_cfg.get("source", "exchange") == "csv_url":
+        return data_cfg["csv_url"].get("label", "csv_source")
+    return data_cfg["exchange"]
+
+
+def _build_client(data_cfg):
+    if data_cfg.get("source", "exchange") == "csv_url":
+        csv_cfg = data_cfg["csv_url"]
+        return CsvUrlDataClient(
+            url=csv_cfg["url"],
+            column_map=csv_cfg["column_map"],
+            timestamp_unit=csv_cfg.get("timestamp_unit", "s"),
+        )
+    return ExchangeDataClient(
+        exchange_id=data_cfg["exchange"],
+        max_retries=data_cfg.get("max_retries", 5),
+        retry_backoff_seconds=data_cfg.get("retry_backoff_seconds", 2),
+    )
+
+
+def _cache_path(cache_dir, source_label, symbol, timeframe):
     safe_symbol = symbol.replace("/", "-")
-    return Path(cache_dir) / f"{exchange_id}_{safe_symbol}_{timeframe}.parquet"
+    return Path(cache_dir) / f"{source_label}_{safe_symbol}_{timeframe}.parquet"
 
 
 def fetch_and_clean(config=None, exchange_client=None):
@@ -33,7 +62,7 @@ def fetch_and_clean(config=None, exchange_client=None):
     config = config or load_config()
     data_cfg = config["data"]
 
-    exchange_id = data_cfg["exchange"]
+    source_label = _cache_label(data_cfg)
     symbol = data_cfg["symbol"]
     timeframe = data_cfg["timeframe"]
     history_start = pd.Timestamp(data_cfg["history_start"])
@@ -44,7 +73,7 @@ def fetch_and_clean(config=None, exchange_client=None):
 
     cache_dir = Path(data_cfg["cache_dir"])
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_file = _cache_path(cache_dir, exchange_id, symbol, timeframe)
+    cache_file = _cache_path(cache_dir, source_label, symbol, timeframe)
 
     if cache_file.exists():
         cached_df = pd.read_parquet(cache_file)
@@ -58,11 +87,7 @@ def fetch_and_clean(config=None, exchange_client=None):
         since_ms = max(since_ms, int(last_ts.timestamp() * 1000) + 1)
         logger.info("Cache bulundu: %d satır, %s tarihinden itibaren devam ediliyor", len(cached_df), last_ts)
 
-    client = exchange_client or ExchangeDataClient(
-        exchange_id=exchange_id,
-        max_retries=data_cfg.get("max_retries", 5),
-        retry_backoff_seconds=data_cfg.get("retry_backoff_seconds", 2),
-    )
+    client = exchange_client or _build_client(data_cfg)
 
     raw_candles = client.fetch_ohlcv_history(symbol, timeframe, since_ms)
     new_df = ohlcv_list_to_df(raw_candles) if raw_candles else pd.DataFrame(columns=OHLCV_COLUMNS)

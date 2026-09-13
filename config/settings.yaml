@@ -4,6 +4,7 @@
 # değiştirebilirsiniz (zaman dilimi, veri kaynağı, risk limitleri vb.).
 
 data:
+  source: exchange                       # exchange | csv_url (aşağıda açıklandı)
   exchange: okx                          # ccxt borsa id'si (kullanıcı OKX üzerinden işlem yapıyor)
   symbol: BTC/USDT
   timeframe: 1h                          # ccxt formatı: 1m, 5m, 15m, 1h, 4h, 1d ...
@@ -12,6 +13,26 @@ data:
   processed_dir: data/processed          # işlenmiş çıktı (csv, insan tarafından incelenebilir)
   max_retries: 5                         # geçici ağ hatalarında yeniden deneme sayısı
   retry_backoff_seconds: 2               # yeniden denemeler arası bekleme (exponential backoff'un tabanı)
+
+  # `source: csv_url` yapılırsa borsa API'si yerine hazır bir CSV dosyasından
+  # (URL) toplu geçmiş veri çekilir. Borsa API'sine erişimin olmadığı ortamlarda
+  # (örn. bu projenin ilk geliştirildiği sandbox) veya büyük bir geçmişi tek
+  # seferde bootstrap etmek isterseniz kullanışlıdır. Üretim/canlı kullanım
+  # için varsayılan `exchange` olmalı. Aşağıdaki örnek MIT lisanslı, günlük
+  # güncellenen bir BTC saatlik veri setine işaret eder (kaynak:
+  # github.com/mouadja02/bitcoin-technical-indicators-dataset) - gerçek işlem
+  # yaptığınız OKX ile birebir aynı fiyatlar olmayabilir (farklı borsa/kaynak).
+  csv_url:
+    label: github_btc_reference
+    url: "https://media.githubusercontent.com/media/mouadja02/bitcoin-technical-indicators-dataset/main/bitcoin-hourly-ohlcv.csv"
+    timestamp_unit: s
+    column_map:
+      timestamp: UNIX_TIMESTAMP
+      open: OPEN
+      high: HIGH
+      low: LOW
+      close: CLOSE
+      volume: VOLUME_BTC
 
 # Aktif indikatörler ve parametreleri. Bir indikatörü kapatmak için
 # `enabled: false` yazmanız yeterli (satırı silmenize gerek yok).
