@@ -1,0 +1,301 @@
+// © BTC Al/Sat Sinyal Sistemi - kişisel araştırma/analiz projesi. Yatırım tavsiyesi değildir.
+//
+// ============================================================================
+// BTC SMC Scalp Stratejisi (BOS/CHoCH + Order Block + FVG + Trend Filtresi)
+// ============================================================================
+//
+// NE YAPAR:
+// - Piyasa yapısını (swing high/low, Break of Structure, Change of Character)
+//   takip eder.
+// - Yapı kırılımıyla oluşan Order Block ve Fair Value Gap (FVG) bölgelerini
+//   çizer.
+// - Fiyat bu bölgelere GERİ ÇEKİLİP tepki verdiğinde, uzun vadeli trend
+//   filtresiyle aynı yöndeyse giriş sinyali üretir.
+// - Girişte, işlem başına sabit bir sermaye yüzdesi kadar risk alacak şekilde
+//   (stop-loss'a olan mesafeye göre) pozisyon büyüklüğünü otomatik hesaplar.
+// - Stop-loss + R-katlı take-profit ile çıkar; isteğe bağlı olarak ters
+//   BOS/CHoCH oluşunca da çıkabilir.
+//
+// DÜRÜSTLÜK / SINIRLAMALAR (lütfen okuyun):
+// - Swing high/low tespiti doğası gereği `swingLen` bar GECİKMELİ onaylanır
+//   (bir tepe/dip, ancak sağında `swingLen` kadar bar oluştuktan sonra
+//   "tepe/dip" olarak kabul edilir). Bu REPAINT değildir (bir kez onaylanan
+//   değer değişmez) ama gerçek zamanlı sinyal her zaman birkaç bar gecikmeli
+//   gelir - bu SMC'nin doğasında var.
+// - Order Block tanımı: kırılıma yol açan hareketten önceki SON ters renkli
+//   mumun tam gövde/fitil aralığı (high-low). Bu, SMC topluluğunda yaygın
+//   kullanılan tanımlardan biridir ama TEK "doğru" tanım değildir - farklı
+//   kaynaklar farklı tanımlar kullanır.
+// - Bu strateji parametreleri (swingLen, trendLen, risk oranları) HİÇBİR
+//   VERİYE OPTİMİZE EDİLMEMİŞTİR - makul başlangıç değerleridir. Kendi
+//   sembolünüzde/zaman diliminizde Strategy Tester ile test edip
+//   overfitting riskine karşı temkinli yaklaşın (çok fazla parametre
+//   ayarlayıp geçmişe "uydurmayın").
+// - Emir gerçekleştirme: `calc_on_every_tick=false` ve varsayılan davranışla
+//   sinyal bar KAPANIŞINDA üretilir, emir bir SONRAKİ barın AÇILIŞINDA
+//   dolar - bu, projedeki Python backtest motoruyla aynı "look-ahead
+//   önleme" felsefesidir.
+// - Slipaj Pine'da TICK cinsinden verilir (yüzde değil) - `slippage=3`
+//   yaklaşık bir varsayımdır, gerçek OKX slipajını birebir yansıtmayabilir.
+// - Bu script'in Pine derleyicisinde ÇALIŞTIRILARAK test edilmesi
+//   GEREKİYOR - bu haliyle sadece yazıldı, TradingView'de derlenip
+//   doğrulanmadı. Hata/beklenmedik davranış olursa bildirin.
+//
+//@version=6
+strategy(
+     title="BTC SMC Scalp Stratejisi",
+     shorttitle="BTC-SMC-Scalp",
+     overlay=true,
+     initial_capital=10000,
+     currency=currency.USD,
+     commission_type=strategy.commission.percent,
+     commission_value=0.1,
+     slippage=3,
+     calc_on_every_tick=false,
+     pyramiding=0,
+     max_boxes_count=500,
+     max_labels_count=500,
+     max_lines_count=500)
+
+// ============================================================================
+// AYARLAR
+// ============================================================================
+
+// --- Piyasa Yapısı (SMC) ---
+swingLen       = input.int(5, "Swing (Yapı) Tespit Penceresi", minval=1, group="Piyasa Yapısı (SMC)",
+     tooltip="Bir tepe/dip noktasının onaylanması için her iki yanında kaç bar olması gerektiği. Küçük = daha hızlı ama daha gürültülü.")
+obSearchLimit  = input.int(15, "Order Block Arama Mesafesi (bar)", minval=1, group="Piyasa Yapısı (SMC)")
+obExtendBars   = input.int(50, "Order Block Kutusu Uzatma (bar)", minval=1, group="Piyasa Yapısı (SMC)")
+useOrderBlocks = input.bool(true, "Order Block girişlerini kullan", group="Piyasa Yapısı (SMC)")
+useFVG         = input.bool(true, "Fair Value Gap girişlerini kullan", group="Piyasa Yapısı (SMC)")
+fvgMinAtrMult  = input.float(0.0, "Min. FVG Boyutu (ATR katsayısı, 0 = filtre yok)", minval=0.0, step=0.05, group="Piyasa Yapısı (SMC)")
+
+// --- Trend Filtresi ---
+trendLen       = input.int(200, "Trend Filtresi SMA Periyodu (bar)", minval=1, group="Trend Filtresi",
+     tooltip="Bar sayısı - farklı grafik zaman dilimlerinde farklı bir 'uzun vade' anlamına gelir, ona göre ayarlayın.")
+useTrendFilter = input.bool(true, "Trend filtresini zorunlu kıl", group="Trend Filtresi")
+
+// --- Yön ---
+allowLongs     = input.bool(true, "Long (alış) işlemlerine izin ver", group="Yön")
+allowShorts    = input.bool(false, "Short (satış) işlemlerine izin ver", group="Yön",
+     tooltip="OKX spot hesabı short desteklemez - sadece margin/futures kullanıyorsanız açın.")
+
+// --- Risk Yönetimi ---
+riskPercent      = input.float(1.0, "İşlem Başına Risk (%)", minval=0.1, maxval=10.0, step=0.1, group="Risk Yönetimi")
+rewardRiskRatio  = input.float(2.0, "Risk:Ödül Oranı (Take-Profit)", minval=0.5, step=0.5, group="Risk Yönetimi")
+useStructureExit = input.bool(false, "Ek olarak ters BOS/CHoCH oluşunca da çık", group="Risk Yönetimi")
+
+// --- Görsel ---
+showOrderBlocks = input.bool(true, "Order Block kutularını göster", group="Görsel")
+showFVG         = input.bool(true, "FVG kutularını göster", group="Görsel")
+showStructure   = input.bool(true, "BOS/CHoCH etiketlerini göster", group="Görsel")
+showTrendLine   = input.bool(true, "Trend filtresi çizgisini göster", group="Görsel")
+
+// ============================================================================
+// TREND FİLTRESİ
+// ============================================================================
+
+trendMA = ta.sma(close, trendLen)
+plot(showTrendLine ? trendMA : na, title="Trend Filtresi (SMA)", color=color.new(color.orange, 0), linewidth=2)
+
+bullishBias = not useTrendFilter or close > trendMA
+bearishBias = not useTrendFilter or close < trendMA
+
+// ============================================================================
+// PİYASA YAPISI: SWING HIGH/LOW, BOS / CHoCH
+// ============================================================================
+
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low, swingLen, swingLen)
+
+var float lastSwingHigh   = na
+var bool  swingHighBroken = true
+var float lastSwingLow    = na
+var bool  swingLowBroken  = true
+var int   structureTrend  = 0   // 1 = boğa yapısı, -1 = ayı yapısı, 0 = henüz belirsiz
+
+if not na(ph)
+    lastSwingHigh   := ph
+    swingHighBroken := false
+
+if not na(pl)
+    lastSwingLow   := pl
+    swingLowBroken := false
+
+bullishBreak = not swingHighBroken and not na(lastSwingHigh) and close > lastSwingHigh
+bearishBreak = not swingLowBroken and not na(lastSwingLow) and close < lastSwingLow
+
+isCHoCHUp   = bullishBreak and structureTrend == -1
+isBOSUp     = bullishBreak and structureTrend != -1
+isCHoCHDown = bearishBreak and structureTrend == 1
+isBOSDown   = bearishBreak and structureTrend != 1
+
+if bullishBreak
+    structureTrend  := 1
+    swingHighBroken := true
+    if showStructure
+        label.new(bar_index, high, isCHoCHUp ? "CHoCH↑" : "BOS↑",
+             style=label.style_label_down, color=color.new(color.lime, 20), textcolor=color.black, size=size.small)
+
+if bearishBreak
+    structureTrend := -1
+    swingLowBroken := true
+    if showStructure
+        label.new(bar_index, low, isCHoCHDown ? "CHoCH↓" : "BOS↓",
+             style=label.style_label_up, color=color.new(color.red, 20), textcolor=color.white, size=size.small)
+
+// ============================================================================
+// ORDER BLOCK: kırılıma yol açan hareketten önceki son ters renkli mum
+// ============================================================================
+
+findOppositeCandle(isBullishOB, searchLimit) =>
+    float obTop = na
+    float obBottom = na
+    int obBar = na
+    for i = 1 to searchLimit
+        isBearishCandle = close[i] < open[i]
+        isBullishCandle = close[i] > open[i]
+        if (isBullishOB and isBearishCandle) or (not isBullishOB and isBullishCandle)
+            obTop := high[i]
+            obBottom := low[i]
+            obBar := bar_index - i
+            break
+    [obTop, obBottom, obBar]
+
+var float bullOB_top    = na
+var float bullOB_bottom = na
+var bool  bullOB_active = false
+var box   bullOB_box    = na
+
+var float bearOB_top    = na
+var float bearOB_bottom = na
+var bool  bearOB_active = false
+var box   bearOB_box    = na
+
+if bullishBreak
+    [obTop, obBottom, obBar] = findOppositeCandle(true, obSearchLimit)
+    if not na(obTop)
+        bullOB_top    := obTop
+        bullOB_bottom := obBottom
+        bullOB_active := true
+        if showOrderBlocks
+            bullOB_box := box.new(left=obBar, top=obTop, right=bar_index + obExtendBars, bottom=obBottom,
+                 bgcolor=color.new(color.teal, 85), border_color=color.new(color.teal, 40))
+
+if bearishBreak
+    [obTop, obBottom, obBar] = findOppositeCandle(false, obSearchLimit)
+    if not na(obTop)
+        bearOB_top    := obTop
+        bearOB_bottom := obBottom
+        bearOB_active := true
+        if showOrderBlocks
+            bearOB_box := box.new(left=obBar, top=obTop, right=bar_index + obExtendBars, bottom=obBottom,
+                 bgcolor=color.new(color.maroon, 85), border_color=color.new(color.maroon, 40))
+
+// Mitigasyon: fiyat bölgenin İÇİNDEN kapanışla geçerse bölge geçersizleşir
+if bullOB_active and not na(bullOB_bottom) and close < bullOB_bottom
+    bullOB_active := false
+    if not na(bullOB_box)
+        box.set_right(bullOB_box, bar_index)
+        box.set_bgcolor(bullOB_box, color.new(color.gray, 92))
+        box.set_border_color(bullOB_box, color.new(color.gray, 60))
+
+if bearOB_active and not na(bearOB_top) and close > bearOB_top
+    bearOB_active := false
+    if not na(bearOB_box)
+        box.set_right(bearOB_box, bar_index)
+        box.set_bgcolor(bearOB_box, color.new(color.gray, 92))
+        box.set_border_color(bearOB_box, color.new(color.gray, 60))
+
+// ============================================================================
+// FAIR VALUE GAP (FVG): 3 mumluk fiyat boşluğu
+// ============================================================================
+
+atrVal = ta.atr(14)
+
+bullishFVG = low > high[2] and (fvgMinAtrMult == 0 or (low - high[2]) > atrVal * fvgMinAtrMult)
+bearishFVG = high < low[2] and (fvgMinAtrMult == 0 or (low[2] - high) > atrVal * fvgMinAtrMult)
+
+var float fvgBull_top    = na
+var float fvgBull_bottom = na
+var bool  fvgBull_active = false
+var box   fvgBull_box    = na
+
+var float fvgBear_top    = na
+var float fvgBear_bottom = na
+var bool  fvgBear_active = false
+var box   fvgBear_box    = na
+
+if bullishFVG
+    fvgBull_top    := low
+    fvgBull_bottom := high[2]
+    fvgBull_active := true
+    if showFVG
+        fvgBull_box := box.new(left=bar_index - 2, top=fvgBull_top, right=bar_index + obExtendBars, bottom=fvgBull_bottom,
+             bgcolor=color.new(color.blue, 85), border_color=color.new(color.blue, 50))
+
+if bearishFVG
+    fvgBear_top    := low[2]
+    fvgBear_bottom := high
+    fvgBear_active := true
+    if showFVG
+        fvgBear_box := box.new(left=bar_index - 2, top=fvgBear_top, right=bar_index + obExtendBars, bottom=fvgBear_bottom,
+             bgcolor=color.new(color.purple, 85), border_color=color.new(color.purple, 50))
+
+if fvgBull_active and not na(fvgBull_bottom) and close < fvgBull_bottom
+    fvgBull_active := false
+    if not na(fvgBull_box)
+        box.set_right(fvgBull_box, bar_index)
+        box.set_bgcolor(fvgBull_box, color.new(color.gray, 92))
+
+if fvgBear_active and not na(fvgBear_top) and close > fvgBear_top
+    fvgBear_active := false
+    if not na(fvgBear_box)
+        box.set_right(fvgBear_box, bar_index)
+        box.set_bgcolor(fvgBear_box, color.new(color.gray, 92))
+
+// ============================================================================
+// GİRİŞ MANTIĞI: yapı yönü + trend filtresi + OB/FVG bölgesine dokunuş
+// ============================================================================
+
+priceInBullZone = (useOrderBlocks and bullOB_active and low <= bullOB_top and close >= bullOB_bottom) or
+     (useFVG and fvgBull_active and low <= fvgBull_top and close >= fvgBull_bottom)
+
+priceInBearZone = (useOrderBlocks and bearOB_active and high >= bearOB_bottom and close <= bearOB_top) or
+     (useFVG and fvgBear_active and high >= fvgBear_bottom and close <= fvgBear_top)
+
+longCondition = allowLongs and bullishBias and structureTrend == 1 and priceInBullZone and close > open and strategy.position_size == 0
+shortCondition = allowShorts and bearishBias and structureTrend == -1 and priceInBearZone and close < open and strategy.position_size == 0
+
+// ============================================================================
+// RİSK YÖNETİMİ: stop-loss'a olan mesafeye göre pozisyon boyutu (%risk sabit)
+// ============================================================================
+
+longStop  = useOrderBlocks and bullOB_active ? bullOB_bottom : fvgBull_bottom
+shortStop = useOrderBlocks and bearOB_active ? bearOB_top : fvgBear_top
+
+longRiskPerUnit  = close - longStop
+shortRiskPerUnit = shortStop - close
+
+riskAmount = strategy.equity * (riskPercent / 100)
+longQty  = longRiskPerUnit > 0 ? riskAmount / longRiskPerUnit : na
+shortQty = shortRiskPerUnit > 0 ? riskAmount / shortRiskPerUnit : na
+
+if longCondition and not na(longQty) and longQty > 0
+    strategy.entry("Long", strategy.long, qty=longQty)
+    takeProfitPrice = close + longRiskPerUnit * rewardRiskRatio
+    strategy.exit("Long Exit", from_entry="Long", stop=longStop, limit=takeProfitPrice)
+    alert("BTC LONG sinyali: OB/FVG + BOS/CHoCH confluence, fiyat=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+if shortCondition and not na(shortQty) and shortQty > 0
+    strategy.entry("Short", strategy.short, qty=shortQty)
+    takeProfitPriceShort = close - shortRiskPerUnit * rewardRiskRatio
+    strategy.exit("Short Exit", from_entry="Short", stop=shortStop, limit=takeProfitPriceShort)
+    alert("BTC SHORT sinyali: OB/FVG + BOS/CHoCH confluence, fiyat=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+
+// İsteğe bağlı: ters yönde yeni BOS/CHoCH oluşunca da çık (yapı bozulduysa bekleme)
+if useStructureExit and strategy.position_size > 0 and bearishBreak
+    strategy.close("Long", comment="Ters BOS/CHoCH")
+
+if useStructureExit and strategy.position_size < 0 and bullishBreak
+    strategy.close("Short", comment="Ters BOS/CHoCH")

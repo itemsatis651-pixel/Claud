@@ -8,6 +8,17 @@ modüler bir sistem.
 performansı gösterir; gelecekte tekrarlanacağının garantisi yoktur. Her
 adımda overfitting riskine karşı dürüst bir değerlendirme yapılacak.
 
+## ÖNEMLİ - Proje TradingView/Pine Script'e taşındı
+
+Adım 4'ten sonra (backtest motoru) Python tarafında veri erişimi bu
+geliştirme ortamında sürekli sürtünme yarattığı ve Smart Money Concept gibi
+görsel kavramları TradingView'de doğrulamanın çok daha pratik olduğu
+görüldüğü için, **aktif geliştirme artık `pinescript/` klasöründe (Pine
+Script v6, TradingView)** devam ediyor — detaylar `pinescript/README.md`'de.
+Python tarafı (`src/`, `config/`, `tests/` — aşağıda anlatılan Adım 1-4)
+SİLİNMEDİ, repo'da referans/yedek olarak duruyor ve çalışır durumda
+(64 test geçiyor), ama üzerinde aktif geliştirme yapılmıyor.
+
 ## Kurulum
 
 ```bash
