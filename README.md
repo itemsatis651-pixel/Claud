@@ -27,7 +27,7 @@ data/
 src/
   utils/              # Ortak yardımcılar (config okuma vb.)
   data/               # Veri çekme ve temizleme katmanı (bkz. src/data/README.md)
-  indicators/         # (sonraki adım) Teknik indikatörler
+  indicators/         # Teknik indikatörler, plug-in mimarisi (bkz. src/indicators/README.md)
   strategies/         # (sonraki adım) Kural tabanlı stratejiler
   backtest/           # (sonraki adım) Walk-forward backtest motoru
   risk/               # (sonraki adım) Pozisyon boyutlandırma, stop-loss, kayıp limitleri
@@ -38,24 +38,38 @@ tests/                # Her modül için birim testler
 Her alt modülün kendi `README.md`'si var — aylar sonra geri dönüldüğünde
 "bu modül ne yapıyordu" sorusuna hızlı cevap vermesi için.
 
-## Mevcut durum (Adım 1/6: Veri Katmanı)
+## Mevcut durum (Adım 2/6: İndikatörler tamamlandı)
 
-`src/data` modülü tamamlandı: OKX'ten (kullanıcının işlem yaptığı borsa)
-1 saatlik BTC/USDT mumlarını çeker, temizler (kopya/eksik/mantıksız mum
-tespiti), zaman boşluklarını raporlar, ve incremental cache ile tekrar
+**Adım 1 — Veri Katmanı** (`src/data`): OKX'ten (kullanıcının işlem yaptığı
+borsa) 1 saatlik BTC/USDT mumlarını çeker, temizler (kopya/eksik/mantıksız
+mum tespiti), zaman boşluklarını raporlar, incremental cache ile tekrar
 çalıştırıldığında sadece eksik veriyi çeker.
 
 ```bash
 python -m src.data.pipeline
 ```
 
-**Önemli:** Bu geliştirme ortamının ağ politikası OKX API'sine erişimi
-engelliyor, bu yüzden canlı veri çekme burada test edilemedi (mantık 13
-birim testle mock veriyle doğrulandı — detaylar `src/data/README.md`'de).
+**Önemli:** Bu geliştirme ortamının ağ politikası **her türlü dış piyasa
+verisi API'sine** erişimi engelliyor (sadece OKX değil — Binance, Kraken,
+CoinGecko, Coinbase, Yahoo Finance de denendi, hepsi aynı şekilde
+engellendi). Bu yüzden canlı veri çekme burada test edilemedi; mantık mock
+veriyle birim testlerle doğrulandı (detaylar `src/data/README.md`'de).
 Komutu kendi makinenizde çalıştırıp gerçek veri çekildiğini teyit edin.
 
-Sıradaki adımlar: teknik indikatörler (2) → basit kural tabanlı strateji (3)
-→ walk-forward backtest (4) → risk yönetimi (5) → raporlama (6).
+**Adım 2 — İndikatörler** (`src/indicators`): SMA, EMA, RSI (Wilder),
+MACD, Bollinger Bands — hepsi sıfırdan pandas/numpy ile yazıldı (şeffaflık
+için), plug-in mimarisiyle kayıtlı, config'ten açılıp kapatılabilir.
+
+```bash
+python -m src.indicators.pipeline
+```
+
+Veri katmanı henüz gerçek veri üretmediği için (yukarıdaki ağ kısıtı
+nedeniyle) bu komut şu an **sentetik demo veriyle** çalışıyor — bu normal,
+modülün kendisi gerçek veriyle de aynı şekilde çalışacak.
+
+Sıradaki adımlar: basit kural tabanlı strateji (3) → walk-forward backtest
+(4) → risk yönetimi (5) → raporlama (6).
 
 ## Test
 

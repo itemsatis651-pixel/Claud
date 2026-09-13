@@ -13,9 +13,31 @@ data:
   max_retries: 5                         # geçici ağ hatalarında yeniden deneme sayısı
   retry_backoff_seconds: 2               # yeniden denemeler arası bekleme (exponential backoff'un tabanı)
 
-# Aşağıdaki bölümler sonraki adımlarda (indikatörler, strateji, backtest, risk
-# yönetimi) doldurulacak. Şimdilik yer tutucu olarak boş bırakıldı.
-indicators: {}
+# Aktif indikatörler ve parametreleri. Bir indikatörü kapatmak için
+# `enabled: false` yazmanız yeterli (satırı silmenize gerek yok).
+# Yeni bir indikatör eklemek isterseniz: src/indicators/README.md'ye bakın.
+indicators:
+  sma:
+    enabled: true
+    windows: [20, 50, 200]
+  ema:
+    enabled: true
+    windows: [12, 26]
+  rsi:
+    enabled: true
+    period: 14
+  macd:
+    enabled: true
+    fast: 12
+    slow: 26
+    signal: 9
+  bollinger:
+    enabled: true
+    window: 20
+    num_std: 2
+
+# Aşağıdaki bölümler sonraki adımlarda (strateji, backtest, risk yönetimi)
+# doldurulacak. Şimdilik yer tutucu olarak boş bırakıldı.
 strategy: {}
 backtest: {}
 risk: {}
