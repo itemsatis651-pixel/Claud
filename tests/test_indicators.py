@@ -5,7 +5,7 @@ import pytest
 from src.indicators.momentum import macd, rsi, stochastic
 from src.indicators.pipeline import apply_indicators
 from src.indicators.registry import available_indicators, get_indicator
-from src.indicators.trend import ema, sma
+from src.indicators.trend import donchian, ema, sma
 from src.indicators.volatility import bollinger
 
 
@@ -25,7 +25,7 @@ def make_df(closes):
 
 
 def test_registry_has_all_expected_indicators():
-    assert set(["sma", "ema", "rsi", "macd", "bollinger", "stochastic"]).issubset(available_indicators())
+    assert set(["sma", "ema", "rsi", "macd", "bollinger", "stochastic", "donchian"]).issubset(available_indicators())
     assert get_indicator("sma") is sma
 
 
@@ -112,6 +112,32 @@ def test_stochastic_is_0_when_close_repeatedly_at_period_low():
     out = stochastic(df, period=5, smooth_k=1, d_period=1)
     k = out["stoch_5_1_1_k"]
     assert k.iloc[-1] == pytest.approx(0.0)
+
+
+def test_donchian_upper_lower_track_rolling_extremes():
+    n = 10
+    highs = pd.Series([10, 12, 9, 15, 11, 8, 20, 13, 14, 7], dtype="float64")
+    lows = highs - 2
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC"),
+            "open": highs,
+            "high": highs,
+            "low": lows,
+            "close": highs,
+            "volume": pd.Series([10.0] * n),
+        }
+    )
+    out = donchian(df, periods=(3,))
+    upper = out["donchian_3_upper"]
+    lower = out["donchian_3_lower"]
+    mid = out["donchian_3_mid"]
+
+    # index 6 (0-based): son 3 high = [11, 8, 20] -> upper=20, son 3 low = [9, 6, 18] -> lower=6
+    assert upper.iloc[6] == pytest.approx(20.0)
+    assert lower.iloc[6] == pytest.approx(6.0)
+    assert mid.iloc[6] == pytest.approx((20.0 + 6.0) / 2)
+    assert pd.isna(upper.iloc[1])  # warmup (period=3, henüz 3 bar yok)
 
 
 def test_apply_indicators_respects_enabled_flag():

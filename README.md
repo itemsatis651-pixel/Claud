@@ -73,19 +73,27 @@ referans veri üzerinde test edildi, sonuçlar sağlıklı.
 python -m src.indicators.pipeline
 ```
 
-**Adım 3 — Temel Strateji** (`src/strategies`): MACD + Stokastik confluence
-— trend filtresi (MACD histogram) + zamanlama tetikleyicisi (Stokastik'in
-aşırı bölgeden kesişimi) aynı yönde ise net AL/SAT, değilse BEKLE. Her
-sinyal bir skor (-2..+2) ve okunabilir bir gerekçe taşır.
+**Adım 3 — Temel Strateji** (`src/strategies`): Önce MACD+Stokastik ile
+başlanmıştı, ama bu kullanıcının rastgele attığı bir fikirdi — asıl istek
+"araştır, kanıta dayalı bir strateji seç"ti. BTC'ye özel akademik/
+kantitatif araştırma yapıldı (Grayscale, SSRN, QuantPedia): sonuç, BTC'de
+**trend-takip stratejilerinin mean-reversion'dan belirgin şekilde daha
+dayanıklı (out-of-sample'da bile)** olduğu yönünde. Bunun üzerine ana
+strateji **Donchian Channel Breakout + uzun vadeli trend filtresi** olarak
+seçildi (70 yıldır test edilmiş, az parametreli, klasik bir trend-takip
+sistemi). MACD+Stokastik de plug-in mimarisi sayesinde kayıtlı kaldı,
+config'ten karşılaştırma için seçilebilir.
 
 ```bash
 python -m src.strategies.pipeline
 ```
 
-Gerçek referans veride (2020-2026, 58.728 mum) 46 AL + 110 SAT sinyali
-üretti — **bu henüz backtest değil**, sadece sinyal sayısı; hangi
-sinyallerin kârlı olduğu adım 4'te (walk-forward backtest, fee+slipaj
-dahil) ölçülecek. Detaylı ve dürüst değerlendirme `src/strategies/README.md`'de.
+Gerçek referans veride (2020-2026, 58.728 mum) 1.512 AL + 2.337 SAT sinyali
+üretti — **bu henüz backtest değil ve "işlem sayısı" da değil** (sinyal
+katmanı pozisyon durumunu takip etmiyor, bilinçli bir tasarım kararı —
+detay `src/strategies/README.md`'de). Hangi sinyallerin kârlı olduğu, gerçek
+işlem sayısının ne olacağı adım 4'te (walk-forward backtest, fee+slipaj
+dahil) ölçülecek.
 
 Kullanıcıyla üzerinde anlaşıldığı gibi: **Smart Money Concept** (order
 block/BOS-CHoCH/FVG) katmanı bu temel doğrulandıktan sonra üçüncü bir

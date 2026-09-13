@@ -61,12 +61,25 @@ indicators:
     period: 14
     smooth_k: 3
     d_period: 3
+  donchian:
+    enabled: true
+    periods: [20, 55]    # exit (20) ve entry (55) için ayrı Donchian kanalları
 
 # Aktif strateji ve parametreleri. `active` hangi stratejinin kullanılacağını
 # seçer; o stratejinin kendi bloğu parametrelerini taşır. Yeni bir strateji
 # eklemek isterseniz: src/strategies/README.md'ye bakın.
+#
+# `donchian_breakout` araştırmaya dayalı ana strateji olarak seçildi (bkz.
+# src/strategies/donchian_breakout.py docstring'i - Grayscale/SSRN/QuantPedia
+# kaynaklı bulgular: BTC'de trend-takip stratejileri mean-reversion'dan
+# belirgin şekilde daha dayanıklı). `macd_stochastic` de kayıtlı kalıyor
+# (plug-in mimarisi sayesinde), `active` değiştirilerek karşılaştırılabilir.
 strategy:
-  active: macd_stochastic
+  active: donchian_breakout
+  donchian_breakout:
+    entry_period: 55    # yukarıdaki indicators.donchian.periods ile eşleşmeli
+    exit_period: 20      # yukarıdaki indicators.donchian.periods ile eşleşmeli
+    trend_filter_period: 200   # yukarıdaki indicators.sma.windows ile eşleşmeli
   macd_stochastic:
     macd_prefix: macd_12_26_9      # yukarıdaki indicators.macd parametreleriyle eşleşmeli
     stoch_prefix: stoch_14_3_3     # yukarıdaki indicators.stochastic parametreleriyle eşleşmeli

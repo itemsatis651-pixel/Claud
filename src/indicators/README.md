@@ -15,6 +15,8 @@ tabanlı al/sat sinyalleri üretilecek.
   sinyal hattı + histogram).
 - **`volatility.py`** — `bollinger` (orta bant = SMA, üst/alt bant = ±N
   standart sapma).
+- **`trend.py`** (`donchian`) — Donchian Channel: son N bardaki en yüksek
+  high / en düşük low. Breakout/trend-takip stratejilerinin temel yapı taşı.
 - **`pipeline.py`** — `apply_indicators(df, indicators_config)`: config'teki
   aktif indikatörleri df'e uygular. `run()`: `data/processed/*.csv`'yi okuyup
   indikatörleri ekler; dosya yoksa (henüz `src.data.pipeline`

@@ -9,6 +9,7 @@ Tek başına çalıştırma: `python -m src.strategies.pipeline`
 
 import logging
 
+import src.strategies.donchian_breakout  # noqa: F401 - import side effect: stratejiyi kaydeder
 import src.strategies.macd_stochastic  # noqa: F401 - import side effect: stratejiyi kaydeder
 from src.indicators.pipeline import run as run_indicators
 from src.strategies.registry import get_strategy
