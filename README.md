@@ -28,7 +28,7 @@ src/
   utils/              # Ortak yardımcılar (config okuma vb.)
   data/               # Veri çekme ve temizleme katmanı (bkz. src/data/README.md)
   indicators/         # Teknik indikatörler, plug-in mimarisi (bkz. src/indicators/README.md)
-  strategies/         # (sonraki adım) Kural tabanlı stratejiler
+  strategies/         # Kural tabanlı stratejiler, plug-in mimarisi (bkz. src/strategies/README.md)
   backtest/           # (sonraki adım) Walk-forward backtest motoru
   risk/               # (sonraki adım) Pozisyon boyutlandırma, stop-loss, kayıp limitleri
   reporting/          # (sonraki adım) Equity curve, drawdown, işlem istatistikleri
@@ -38,7 +38,7 @@ tests/                # Her modül için birim testler
 Her alt modülün kendi `README.md`'si var — aylar sonra geri dönüldüğünde
 "bu modül ne yapıyordu" sorusuna hızlı cevap vermesi için.
 
-## Mevcut durum (Adım 2/6: İndikatörler tamamlandı)
+## Mevcut durum (Adım 3/6: Temel strateji tamamlandı)
 
 **Adım 1 — Veri Katmanı** (`src/data`): OKX'ten (kullanıcının işlem yaptığı
 borsa) 1 saatlik BTC/USDT mumlarını çeker, temizler (kopya/eksik/mantıksız
@@ -73,8 +73,26 @@ referans veri üzerinde test edildi, sonuçlar sağlıklı.
 python -m src.indicators.pipeline
 ```
 
-Sıradaki adımlar: basit kural tabanlı strateji (3) → walk-forward backtest
-(4) → risk yönetimi (5) → raporlama (6).
+**Adım 3 — Temel Strateji** (`src/strategies`): MACD + Stokastik confluence
+— trend filtresi (MACD histogram) + zamanlama tetikleyicisi (Stokastik'in
+aşırı bölgeden kesişimi) aynı yönde ise net AL/SAT, değilse BEKLE. Her
+sinyal bir skor (-2..+2) ve okunabilir bir gerekçe taşır.
+
+```bash
+python -m src.strategies.pipeline
+```
+
+Gerçek referans veride (2020-2026, 58.728 mum) 46 AL + 110 SAT sinyali
+üretti — **bu henüz backtest değil**, sadece sinyal sayısı; hangi
+sinyallerin kârlı olduğu adım 4'te (walk-forward backtest, fee+slipaj
+dahil) ölçülecek. Detaylı ve dürüst değerlendirme `src/strategies/README.md`'de.
+
+Kullanıcıyla üzerinde anlaşıldığı gibi: **Smart Money Concept** (order
+block/BOS-CHoCH/FVG) katmanı bu temel doğrulandıktan sonra üçüncü bir
+confluence bileşeni olarak eklenecek.
+
+Sıradaki adımlar: walk-forward backtest (4) → risk yönetimi (5) →
+raporlama (6).
 
 ## Test
 

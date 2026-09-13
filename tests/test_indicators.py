@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.indicators.momentum import macd, rsi
+from src.indicators.momentum import macd, rsi, stochastic
 from src.indicators.pipeline import apply_indicators
 from src.indicators.registry import available_indicators, get_indicator
 from src.indicators.trend import ema, sma
@@ -25,7 +25,7 @@ def make_df(closes):
 
 
 def test_registry_has_all_expected_indicators():
-    assert set(["sma", "ema", "rsi", "macd", "bollinger"]).issubset(available_indicators())
+    assert set(["sma", "ema", "rsi", "macd", "bollinger", "stochastic"]).issubset(available_indicators())
     assert get_indicator("sma") is sma
 
 
@@ -76,6 +76,42 @@ def test_bollinger_bands_collapse_to_price_for_flat_series():
     assert out["bb_20_2_mid"].iloc[-1] == pytest.approx(50.0)
     assert out["bb_20_2_upper"].iloc[-1] == pytest.approx(50.0)
     assert out["bb_20_2_lower"].iloc[-1] == pytest.approx(50.0)
+
+
+def test_stochastic_is_100_when_close_repeatedly_at_period_high():
+    n = 20
+    highs = np.arange(1, n + 1, dtype="float64")
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC"),
+            "open": highs,
+            "high": highs,
+            "low": highs - 1,
+            "close": highs,  # kapanış her mumda periyodun zirvesinde
+            "volume": np.full(n, 10.0),
+        }
+    )
+    out = stochastic(df, period=5, smooth_k=1, d_period=1)
+    k = out["stoch_5_1_1_k"]
+    assert k.iloc[-1] == pytest.approx(100.0)
+
+
+def test_stochastic_is_0_when_close_repeatedly_at_period_low():
+    n = 20
+    lows = np.arange(n, 0, -1, dtype="float64")
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2024-01-01", periods=n, freq="1h", tz="UTC"),
+            "open": lows,
+            "high": lows + 1,
+            "low": lows,
+            "close": lows,  # kapanış her mumda periyodun dibinde
+            "volume": np.full(n, 10.0),
+        }
+    )
+    out = stochastic(df, period=5, smooth_k=1, d_period=1)
+    k = out["stoch_5_1_1_k"]
+    assert k.iloc[-1] == pytest.approx(0.0)
 
 
 def test_apply_indicators_respects_enabled_flag():

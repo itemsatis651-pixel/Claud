@@ -41,3 +41,19 @@ def macd(df, fast=12, slow=26, signal=9, price_col="close"):
         f"{prefix}_signal": signal_line,
         f"{prefix}_hist": histogram,
     }
+
+
+@register_indicator("stochastic")
+def stochastic(df, period=14, smooth_k=3, d_period=3, high_col="high", low_col="low", close_col="close"):
+    """Stokastik Osilatör (Slow Stochastic: ham %K önce `smooth_k` ile
+    yumuşatılır, %D bunun `d_period` hareketli ortalamasıdır).
+    """
+    lowest_low = df[low_col].rolling(window=period, min_periods=period).min()
+    highest_high = df[high_col].rolling(window=period, min_periods=period).max()
+
+    raw_k = 100 * (df[close_col] - lowest_low) / (highest_high - lowest_low)
+    k = raw_k.rolling(window=smooth_k, min_periods=smooth_k).mean()
+    d = k.rolling(window=d_period, min_periods=d_period).mean()
+
+    prefix = f"stoch_{period}_{smooth_k}_{d_period}"
+    return {f"{prefix}_k": k, f"{prefix}_d": d}

@@ -56,9 +56,23 @@ indicators:
     enabled: true
     window: 20
     num_std: 2
+  stochastic:
+    enabled: true
+    period: 14
+    smooth_k: 3
+    d_period: 3
 
-# Aşağıdaki bölümler sonraki adımlarda (strateji, backtest, risk yönetimi)
-# doldurulacak. Şimdilik yer tutucu olarak boş bırakıldı.
-strategy: {}
+# Aktif strateji ve parametreleri. `active` hangi stratejinin kullanılacağını
+# seçer; o stratejinin kendi bloğu parametrelerini taşır. Yeni bir strateji
+# eklemek isterseniz: src/strategies/README.md'ye bakın.
+strategy:
+  active: macd_stochastic
+  macd_stochastic:
+    macd_prefix: macd_12_26_9      # yukarıdaki indicators.macd parametreleriyle eşleşmeli
+    stoch_prefix: stoch_14_3_3     # yukarıdaki indicators.stochastic parametreleriyle eşleşmeli
+    oversold: 20
+    overbought: 80
+
+# Aşağıdaki bölümler sonraki adımlarda (backtest, risk yönetimi) doldurulacak.
 backtest: {}
 risk: {}
