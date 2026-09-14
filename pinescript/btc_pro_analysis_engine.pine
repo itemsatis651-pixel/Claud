@@ -134,6 +134,19 @@
 // later `lastPriceAboveVwap := priceAboveVwap` (a runtime series bool) gets
 // rejected as a series-into-const assignment. Fixed by casting the
 // initializer explicitly: `var bool lastPriceAboveVwap = bool(na)`.
+//
+// v0.9.2 QA FIX (🤍, Madde 125): runtime error in Bar Replay only — "Error on
+// bar 10084: The requested historical offset (330) is beyond the historical
+// buffer's limit (329)." Root cause: Pine auto-detects how many bars of
+// history to keep per series, but Bar Replay enforces this more strictly
+// than normal chart execution, and a script this size (many ta.* calls with
+// their own lookbacks — EMA200, ta.percentrank(,100), MACD(12,26,9), RSI,
+// pivots, RVOL/VWAP SMAs — plus explicit `[]` offsets like
+// open/close/rsiValue[i_pivotRight]) can need more auto-detected buffer than
+// Pine allocates by default, especially under Replay's tighter limit. Fixed
+// per Pine's own documented remedy for this exact error: explicitly reserve
+// the buffer via `max_bars_back = 500` on the indicator() call, well above
+// every lookback actually used in this script.
 // =============================================================================
 
 // Title/shorttitle kept short and FIXED on purpose (TradingView hard limits:
@@ -141,9 +154,9 @@
 // every module by name already broke the 128-char limit once modules kept
 // being added. Full module list lives in the header comment above and in
 // ENGINE_VERSION instead, where there is no length limit.
-indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
+indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.9.1-phaseD-participation-fix"
+var string ENGINE_VERSION = "v0.9.2-replay-buffer-fix"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
