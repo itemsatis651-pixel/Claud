@@ -10,9 +10,30 @@ TradingView kendi canlı OKX veri akışını sağlıyor ve Smart Money Concept
 
 ## Dosyalar
 
-- **`btc_smc_scalp_strategy.pine`** — Ana strateji script'i. Tek dosya,
-  bölümlere ayrılmış (piyasa yapısı / order block / FVG / trend filtresi /
-  giriş mantığı / risk yönetimi / alarm).
+- **`btc_smc_scalp_strategy.pine`** — Ana strateji script'i (v2). Tek dosya,
+  bölümlere ayrılmış (piyasa yapısı / order block / FVG / momentum / trend
+  filtresi / giriş onayı / risk yönetimi / sinyal durumu / detay paneli).
+
+## v2 değişiklikleri (v1'de kullanıcı geri bildirimiyle bulunan sorunlar)
+
+v1 TradingView'de derlendi ve çalıştı, ama iki sorun bildirildi:
+
+1. **Giriş zamanlaması kötüydü** ("düşeceği yerde al, çıkacağı yerde sat"):
+   v1'de fiyat order block/FVG'ye sadece değip o bar biraz yeşil kapanınca
+   hemen giriş veriliyordu - kısa vadeli/gürültülü grafiklerde bu, henüz
+   gerçek bir tepki oluşmadan tam tepe/dip noktasında tetikleniyordu.
+   **Düzeltme:** İki aşamalı onay - fiyat bölgeye dokunur (beklemede
+   işaretlenir), sonra `confirmMaxBars` bar içinde bölgenin üst/alt
+   sınırını GERÇEK bir kapanışla geri kazanırsa (reclaim) giriş onaylanır.
+2. **"Sadece AL/SAT/BEKLE + en detaylı gerekçe" isteği unutulmuştu:** v1
+   sadece BOS/CHoCH etiketleri ve kutular çiziyordu, net bir sinyal durumu
+   yoktu. **Düzeltme:** Sürekli görünen bir panel (AL/SAT/BEKLE + trend/
+   yapı/momentum durumu + Long/Short skoru X/5 + eksik koşullar + nihai
+   karar gerekçesi) ve grafik üzerinde AL/SAT/ÇIKIŞ etiketleri eklendi.
+   BOS/CHoCH/OB/FVG görselleri artık varsayılan KAPALI (isteğe bağlı).
+
+Ayrıca momentum onayı (RSI + MACD) eklendi - en başta konuşulan "MACD +
+Stokastik/momentum + SMC" fikrinin momentum ayağı.
 
 ## Strateji mantığı
 
@@ -22,17 +43,29 @@ TradingView kendi canlı OKX veri akışını sağlıyor ve Smart Money Concept
 2. **Order Block:** BOS/CHoCH'a yol açan hareketten önceki son ters renkli
    mum, bir "kutu" olarak işaretlenir. Fiyat bu bölgeye geri dönüp kapanışla
    içinden geçmezse bölge geçerliliğini korur (mitigasyon = geçersizleşme).
+   `obMaxAge` bar boyunca hiç test edilmezse "bayat" kabul edilip pasifleşir.
 3. **Fair Value Gap (FVG):** 3 mumluk fiyat boşluğu, ek bir giriş bölgesi
    olarak kullanılabilir (aç/kapa: `useFVG`).
 4. **Trend Filtresi:** Uzun vadeli SMA - sadece bu yönde giriş alınır (aç/kapa:
    `useTrendFilter`).
-5. **Giriş:** Yapı yönü (BOS/CHoCH) + trend filtresi + fiyatın OB/FVG
-   bölgesine dokunup tepki vermesi (confluence) aynı anda sağlanınca.
-6. **Risk Yönetimi:** Stop-loss, order block/FVG'nin diğer ucuna konur;
+5. **Momentum Onayı:** RSI + MACD histogram aynı yönde olmalı (aç/kapa:
+   `useMomentumFilter`).
+6. **Giriş onayı (iki aşamalı):** (a) fiyat OB/FVG bölgesine dokunur, (b)
+   `confirmMaxBars` bar içinde bölgenin üst/alt sınırını gerçek bir
+   kapanışla geri kazanırsa (reclaim) onaylanır. Sadece "değme" yeterli
+   değildir - bu, v1'de bulunan erken/yanlış zamanlı giriş sorununu çözmek
+   için eklendi.
+7. **Giriş:** Yapı yönü + trend filtresi + momentum + reclaim onayı hepsi
+   aynı anda sağlanınca (5 koşullu confluence).
+8. **Risk Yönetimi:** Stop-loss, order block/FVG'nin diğer ucuna konur;
    pozisyon büyüklüğü `strategy.equity * risk% / stop mesafesi` formülüyle
    otomatik hesaplanır (yaklaşık sabit %risk/işlem - başta üzerinde
    anlaştığımız muhafazakar %1-2 risk yaklaşımını burada native olarak
    uyguluyoruz). Take-profit, R-katlı (`rewardRiskRatio`, varsayılan 2:1).
+9. **Sinyal durumu ve detay paneli:** Grafiğin sağ üstünde sürekli görünen
+   panel - anlık AL/SAT/BEKLE, trend/yapı durumu, Long/Short skoru (X/5),
+   eksik koşullar, nihai kararın gerekçesi. Grafik üzerinde de AL/SAT/ÇIKIŞ
+   etiketleri (aç/kapa: `showSignalLabels`).
 
 ## Kurulum / Test
 
@@ -48,12 +81,16 @@ TradingView kendi canlı OKX veri akışını sağlıyor ve Smart Money Concept
 
 ## Dürüstlük / bilinen sınırlamalar
 
-- **Bu script TradingView'de derlenerek TEST EDİLMEDİ** — ben (Claude) bu
-  ortamda Pine Script çalıştıramıyorum/derleyemiyorum. Kod dikkatle, Pine v6
-  sözdizimi kurallarına göre yazıldı ama derleme hatası veya beklenmedik
-  davranış çıkarsa bana bildirin, düzeltip tekrar vereyim. **Bu, Python
-  tarafındaki gibi "64 test geçti" güvencesine sahip değil** — yeni bir
-  doğrulama döngüsüne giriyoruz.
+- **v1 TradingView'de derlendi ve çalıştı** (kullanıcı ekran görüntüsüyle
+  doğruladı) — ama v2'deki değişiklikler (momentum, iki aşamalı onay,
+  panel) benim tarafımdan derlenip test EDİLMEDİ. Kod dikkatle Pine v6
+  sözdizimine göre yazıldı ama derleme hatası veya beklenmedik davranış
+  çıkarsa bildirin, düzeltip tekrar vereyim. **Bu, Python tarafındaki gibi
+  "64 test geçti" güvencesine sahip değil.**
+- **İki aşamalı onay hâlâ mükemmel değildir:** whipsaw riskini azaltır ama
+  sıfırlamaz - özellikle çok kısa zaman dilimlerinde (1-3dk gibi) hâlâ
+  yanlış sinyal üretebilir. `confirmMaxBars`, `swingLen`, `trendLen`
+  parametrelerini kendi grafiğinizde deneyerek ayarlayın.
 - **Swing tespiti gecikmeli:** Bir tepe/dip, ancak `swingLen` bar sonra
   "onaylanır" — bu SMC'nin doğasında var, repaint değil ama gerçek zamanlı
   sinyal her zaman birkaç bar gecikmeli gelir.

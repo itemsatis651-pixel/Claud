@@ -1,50 +1,53 @@
 // © BTC Al/Sat Sinyal Sistemi - kişisel araştırma/analiz projesi. Yatırım tavsiyesi değildir.
 //
 // ============================================================================
-// BTC SMC Scalp Stratejisi (BOS/CHoCH + Order Block + FVG + Trend Filtresi)
+// BTC SMC Scalp Stratejisi v2 (BOS/CHoCH + Order Block + FVG + Momentum + Trend)
 // ============================================================================
 //
-// NE YAPAR:
-// - Piyasa yapısını (swing high/low, Break of Structure, Change of Character)
-//   takip eder.
-// - Yapı kırılımıyla oluşan Order Block ve Fair Value Gap (FVG) bölgelerini
-//   çizer.
-// - Fiyat bu bölgelere GERİ ÇEKİLİP tepki verdiğinde, uzun vadeli trend
-//   filtresiyle aynı yöndeyse giriş sinyali üretir.
-// - Girişte, işlem başına sabit bir sermaye yüzdesi kadar risk alacak şekilde
-//   (stop-loss'a olan mesafeye göre) pozisyon büyüklüğünü otomatik hesaplar.
-// - Stop-loss + R-katlı take-profit ile çıkar; isteğe bağlı olarak ters
-//   BOS/CHoCH oluşunca da çıkabilir.
+// v2 DEĞİŞİKLİKLERİ (v1'de bulunan sorunlara karşı):
+// 1. GİRİŞ ONAYI GÜÇLENDİRİLDİ: v1'de fiyat order block/FVG'ye sadece
+//    "değip" o bar biraz yeşil kapanınca hemen giriş veriliyordu - bu, kısa
+//    vadeli/gürültülü grafiklerde tam tepe/dip noktasında (henüz gerçek bir
+//    tepki oluşmadan) tetiklenmeye çok açıktı ("düşeceği yerde al" sorunu).
+//    Artık İKİ AŞAMALI: (a) fiyat bölgeye dokunur -> "beklemede" işaretlenir,
+//    (b) belirli bir bar penceresi içinde (confirmMaxBars) fiyat bölgenin
+//    ÜST sınırını gerçek bir kapanışla GERİ KAZANIRSA (reclaim) giriş onaylanır.
+// 2. MOMENTUM ONAYI EKLENDİ: RSI + MACD histogram artık zorunlu bir ek
+//    confluence katmanı (en başta konuşulan "MACD + Stokastik/momentum +
+//    SMC" fikrinin momentum ayağı).
+// 3. AL/SAT/BEKLE + EN DETAYLI GEREKÇE PANELİ: Grafiğin köşesinde sürekli
+//    görünen bir tablo - anlık sinyal, trend/yapı/bölge/momentum durumu,
+//    Long/Short skorları (X/5), eksik koşullar, nihai kararın gerekçesi.
+// 4. GRAFİK SADELEŞTİRİLDİ: BOS/CHoCH etiketleri ve OB/FVG kutuları
+//    varsayılan KAPALI (isteğe bağlı açılabilir) - varsayılan görünümde
+//    sadece AL/SAT/ÇIKIŞ etiketleri ve detay paneli var.
 //
 // DÜRÜSTLÜK / SINIRLAMALAR (lütfen okuyun):
-// - Swing high/low tespiti doğası gereği `swingLen` bar GECİKMELİ onaylanır
-//   (bir tepe/dip, ancak sağında `swingLen` kadar bar oluştuktan sonra
-//   "tepe/dip" olarak kabul edilir). Bu REPAINT değildir (bir kez onaylanan
-//   değer değişmez) ama gerçek zamanlı sinyal her zaman birkaç bar gecikmeli
-//   gelir - bu SMC'nin doğasında var.
-// - Order Block tanımı: kırılıma yol açan hareketten önceki SON ters renkli
-//   mumun tam gövde/fitil aralığı (high-low). Bu, SMC topluluğunda yaygın
-//   kullanılan tanımlardan biridir ama TEK "doğru" tanım değildir - farklı
-//   kaynaklar farklı tanımlar kullanır.
-// - Bu strateji parametreleri (swingLen, trendLen, risk oranları) HİÇBİR
-//   VERİYE OPTİMİZE EDİLMEMİŞTİR - makul başlangıç değerleridir. Kendi
-//   sembolünüzde/zaman diliminizde Strategy Tester ile test edip
-//   overfitting riskine karşı temkinli yaklaşın (çok fazla parametre
-//   ayarlayıp geçmişe "uydurmayın").
-// - Emir gerçekleştirme: `calc_on_every_tick=false` ve varsayılan davranışla
-//   sinyal bar KAPANIŞINDA üretilir, emir bir SONRAKİ barın AÇILIŞINDA
-//   dolar - bu, projedeki Python backtest motoruyla aynı "look-ahead
-//   önleme" felsefesidir.
-// - Slipaj Pine'da TICK cinsinden verilir (yüzde değil) - `slippage=3`
-//   yaklaşık bir varsayımdır, gerçek OKX slipajını birebir yansıtmayabilir.
-// - Bu script'in Pine derleyicisinde ÇALIŞTIRILARAK test edilmesi
-//   GEREKİYOR - bu haliyle sadece yazıldı, TradingView'de derlenip
-//   doğrulanmadı. Hata/beklenmedik davranış olursa bildirin.
+// - Swing high/low tespiti doğası gereği `swingLen` bar GECİKMELİ onaylanır.
+//   Bu REPAINT değildir (bir kez onaylanan değer değişmez) ama gerçek
+//   zamanlı sinyal her zaman birkaç bar gecikmeli gelir - SMC'nin doğasında
+//   var, v2'deki reclaim+momentum onayı bunu AZALTIR ama SIFIRLAMAZ.
+// - Order Block/FVG tanımları SMC topluluğunda tartışmalıdır, "tek doğru"
+//   tanım yoktur - burada yaygın kullanılan bir versiyon uygulandı.
+// - Parametreler (swingLen, trendLen, confirmMaxBars, risk oranları) HİÇBİR
+//   VERİYE OPTİMİZE EDİLMEMİŞTİR. Kendi sembolünüzde/zaman diliminizde
+//   Strategy Tester ile test edip overfitting riskine dikkat edin (çok
+//   fazla parametre ayarlayıp geçmişe "uydurmayın").
+// - Emir gerçekleştirme: sinyal bar KAPANIŞINDA üretilir, emir bir SONRAKİ
+//   barın AÇILIŞINDA dolar (Python backtest motoruyla aynı "look-ahead
+//   önleme" felsefesi).
+// - Slipaj Pine'da TICK cinsinden verilir (yüzde değil) - yaklaşık bir
+//   varsayımdır.
+// - Bu script TradingView'de derlenerek TEST EDİLDİ Mİ: v1 derlendi ve
+//   çalıştı (kullanıcı ekran görüntüsüyle doğruladı). Bu v2 değişikliği
+//   BENİM TARAFIMDAN derlenip test EDİLMEDİ (bu ortamda Pine Script
+//   çalıştıramıyorum) - lütfen derleyip test edin, hata/beklenmedik
+//   davranış olursa bildirin.
 //
 //@version=6
 strategy(
-     title="BTC SMC Scalp Stratejisi",
-     shorttitle="BTC-SMC-Scalp",
+     title="BTC SMC Scalp Stratejisi v2",
+     shorttitle="BTC-SMC-Scalp-v2",
      overlay=true,
      initial_capital=10000,
      currency=currency.USD,
@@ -55,7 +58,8 @@ strategy(
      pyramiding=0,
      max_boxes_count=500,
      max_labels_count=500,
-     max_lines_count=500)
+     max_lines_count=500,
+     max_bars_back=1000)
 
 // ============================================================================
 // AYARLAR
@@ -65,15 +69,28 @@ strategy(
 swingLen       = input.int(5, "Swing (Yapı) Tespit Penceresi", minval=1, group="Piyasa Yapısı (SMC)",
      tooltip="Bir tepe/dip noktasının onaylanması için her iki yanında kaç bar olması gerektiği. Küçük = daha hızlı ama daha gürültülü.")
 obSearchLimit  = input.int(15, "Order Block Arama Mesafesi (bar)", minval=1, group="Piyasa Yapısı (SMC)")
-obExtendBars   = input.int(50, "Order Block Kutusu Uzatma (bar)", minval=1, group="Piyasa Yapısı (SMC)")
+obExtendBars   = input.int(50, "Order Block/FVG Kutusu Uzatma (bar)", minval=1, group="Piyasa Yapısı (SMC)")
+obMaxAge       = input.int(300, "Order Block/FVG Maks. Geçerlilik Yaşı (bar)", minval=10, group="Piyasa Yapısı (SMC)",
+     tooltip="Bu kadar bar test edilmeden beklerse bölge artık 'bayat' kabul edilip pasifleştirilir.")
 useOrderBlocks = input.bool(true, "Order Block girişlerini kullan", group="Piyasa Yapısı (SMC)")
 useFVG         = input.bool(true, "Fair Value Gap girişlerini kullan", group="Piyasa Yapısı (SMC)")
 fvgMinAtrMult  = input.float(0.0, "Min. FVG Boyutu (ATR katsayısı, 0 = filtre yok)", minval=0.0, step=0.05, group="Piyasa Yapısı (SMC)")
+
+// --- Giriş Onayı ---
+confirmMaxBars = input.int(6, "Bölgeye Dokunuştan Sonra Onay Bekleme Süresi (bar)", minval=1, group="Giriş Onayı",
+     tooltip="Fiyat bölgeye değdikten sonra bu kadar bar içinde bölgenin üst/alt sınırını geri kazanmazsa (reclaim) sinyal iptal olur.")
 
 // --- Trend Filtresi ---
 trendLen       = input.int(200, "Trend Filtresi SMA Periyodu (bar)", minval=1, group="Trend Filtresi",
      tooltip="Bar sayısı - farklı grafik zaman dilimlerinde farklı bir 'uzun vade' anlamına gelir, ona göre ayarlayın.")
 useTrendFilter = input.bool(true, "Trend filtresini zorunlu kıl", group="Trend Filtresi")
+
+// --- Momentum Onayı ---
+useMomentumFilter = input.bool(true, "Momentum onayını zorunlu kıl (RSI + MACD)", group="Momentum Onayı")
+rsiLen             = input.int(14, "RSI Periyodu", minval=1, group="Momentum Onayı")
+macdFast           = input.int(12, "MACD Hızlı EMA", minval=1, group="Momentum Onayı")
+macdSlow           = input.int(26, "MACD Yavaş EMA", minval=1, group="Momentum Onayı")
+macdSignalLen      = input.int(9, "MACD Sinyal EMA", minval=1, group="Momentum Onayı")
 
 // --- Yön ---
 allowLongs     = input.bool(true, "Long (alış) işlemlerine izin ver", group="Yön")
@@ -86,10 +103,12 @@ rewardRiskRatio  = input.float(2.0, "Risk:Ödül Oranı (Take-Profit)", minval=0
 useStructureExit = input.bool(false, "Ek olarak ters BOS/CHoCH oluşunca da çık", group="Risk Yönetimi")
 
 // --- Görsel ---
-showOrderBlocks = input.bool(true, "Order Block kutularını göster", group="Görsel")
-showFVG         = input.bool(true, "FVG kutularını göster", group="Görsel")
-showStructure   = input.bool(true, "BOS/CHoCH etiketlerini göster", group="Görsel")
-showTrendLine   = input.bool(true, "Trend filtresi çizgisini göster", group="Görsel")
+showSignalLabels = input.bool(true, "AL/SAT/ÇIKIŞ etiketlerini grafikte göster", group="Görsel")
+showDashboard    = input.bool(true, "Detay panelini (AL/SAT/BEKLE + gerekçe) göster", group="Görsel")
+showOrderBlocks  = input.bool(false, "Order Block kutularını göster (hata ayıklama)", group="Görsel")
+showFVG          = input.bool(false, "FVG kutularını göster (hata ayıklama)", group="Görsel")
+showStructure    = input.bool(false, "BOS/CHoCH etiketlerini göster (hata ayıklama)", group="Görsel")
+showTrendLine    = input.bool(true, "Trend filtresi çizgisini göster", group="Görsel")
 
 // ============================================================================
 // TREND FİLTRESİ
@@ -100,6 +119,19 @@ plot(showTrendLine ? trendMA : na, title="Trend Filtresi (SMA)", color=color.new
 
 bullishBias = not useTrendFilter or close > trendMA
 bearishBias = not useTrendFilter or close < trendMA
+
+// ============================================================================
+// MOMENTUM ONAYI: RSI + MACD
+// ============================================================================
+
+rsiVal = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, macdFast, macdSlow, macdSignalLen)
+
+momentumBullish = macdHist > 0 and rsiVal > 50
+momentumBearish = macdHist < 0 and rsiVal < 50
+
+momentumOkLong  = not useMomentumFilter or momentumBullish
+momentumOkShort = not useMomentumFilter or momentumBearish
 
 // ============================================================================
 // PİYASA YAPISI: SWING HIGH/LOW, BOS / CHoCH
@@ -164,11 +196,13 @@ findOppositeCandle(isBullishOB, searchLimit) =>
 
 var float bullOB_top    = na
 var float bullOB_bottom = na
+var int   bullOB_bar    = na
 var bool  bullOB_active = false
 var box   bullOB_box    = na
 
 var float bearOB_top    = na
 var float bearOB_bottom = na
+var int   bearOB_bar    = na
 var bool  bearOB_active = false
 var box   bearOB_box    = na
 
@@ -177,6 +211,7 @@ if bullishBreak
     if not na(obTop)
         bullOB_top    := obTop
         bullOB_bottom := obBottom
+        bullOB_bar    := obBar
         bullOB_active := true
         if showOrderBlocks
             bullOB_box := box.new(left=obBar, top=obTop, right=bar_index + obExtendBars, bottom=obBottom,
@@ -187,6 +222,7 @@ if bearishBreak
     if not na(obTop)
         bearOB_top    := obTop
         bearOB_bottom := obBottom
+        bearOB_bar    := obBar
         bearOB_active := true
         if showOrderBlocks
             bearOB_box := box.new(left=obBar, top=obTop, right=bar_index + obExtendBars, bottom=obBottom,
@@ -207,6 +243,13 @@ if bearOB_active and not na(bearOB_top) and close > bearOB_top
         box.set_bgcolor(bearOB_box, color.new(color.gray, 92))
         box.set_border_color(bearOB_box, color.new(color.gray, 60))
 
+// Yaşlanma: uzun süredir test edilmemiş "bayat" bölgeleri pasifleştir
+if bullOB_active and not na(bullOB_bar) and (bar_index - bullOB_bar) > obMaxAge
+    bullOB_active := false
+
+if bearOB_active and not na(bearOB_bar) and (bar_index - bearOB_bar) > obMaxAge
+    bearOB_active := false
+
 // ============================================================================
 // FAIR VALUE GAP (FVG): 3 mumluk fiyat boşluğu
 // ============================================================================
@@ -218,17 +261,20 @@ bearishFVG = high < low[2] and (fvgMinAtrMult == 0 or (low[2] - high) > atrVal *
 
 var float fvgBull_top    = na
 var float fvgBull_bottom = na
+var int   fvgBull_bar    = na
 var bool  fvgBull_active = false
 var box   fvgBull_box    = na
 
 var float fvgBear_top    = na
 var float fvgBear_bottom = na
+var int   fvgBear_bar    = na
 var bool  fvgBear_active = false
 var box   fvgBear_box    = na
 
 if bullishFVG
     fvgBull_top    := low
     fvgBull_bottom := high[2]
+    fvgBull_bar    := bar_index
     fvgBull_active := true
     if showFVG
         fvgBull_box := box.new(left=bar_index - 2, top=fvgBull_top, right=bar_index + obExtendBars, bottom=fvgBull_bottom,
@@ -237,6 +283,7 @@ if bullishFVG
 if bearishFVG
     fvgBear_top    := low[2]
     fvgBear_bottom := high
+    fvgBear_bar    := bar_index
     fvgBear_active := true
     if showFVG
         fvgBear_box := box.new(left=bar_index - 2, top=fvgBear_top, right=bar_index + obExtendBars, bottom=fvgBear_bottom,
@@ -254,18 +301,69 @@ if fvgBear_active and not na(fvgBear_top) and close > fvgBear_top
         box.set_right(fvgBear_box, bar_index)
         box.set_bgcolor(fvgBear_box, color.new(color.gray, 92))
 
+if fvgBull_active and not na(fvgBull_bar) and (bar_index - fvgBull_bar) > obMaxAge
+    fvgBull_active := false
+
+if fvgBear_active and not na(fvgBear_bar) and (bar_index - fvgBear_bar) > obMaxAge
+    fvgBear_active := false
+
 // ============================================================================
-// GİRİŞ MANTIĞI: yapı yönü + trend filtresi + OB/FVG bölgesine dokunuş
+// GİRİŞ ONAYI: bölgeye dokunuş -> belirli süre içinde ÜST/ALT sınırı GERİ
+// KAZANMA (reclaim). Sadece "değme" YETERLİ DEĞİL - v1'in sorunu buydu.
 // ============================================================================
 
-priceInBullZone = (useOrderBlocks and bullOB_active and low <= bullOB_top and close >= bullOB_bottom) or
-     (useFVG and fvgBull_active and low <= fvgBull_top and close >= fvgBull_bottom)
+touchingBullOB   = useOrderBlocks and bullOB_active and low <= bullOB_top and low >= bullOB_bottom
+touchingBullFVG  = useFVG and fvgBull_active and low <= fvgBull_top and low >= fvgBull_bottom
+touchingBullZone = touchingBullOB or touchingBullFVG
 
-priceInBearZone = (useOrderBlocks and bearOB_active and high >= bearOB_bottom and close <= bearOB_top) or
-     (useFVG and fvgBear_active and high >= fvgBear_bottom and close <= fvgBear_top)
+touchingBearOB   = useOrderBlocks and bearOB_active and high >= bearOB_bottom and high <= bearOB_top
+touchingBearFVG  = useFVG and fvgBear_active and high >= fvgBear_bottom and high <= fvgBear_top
+touchingBearZone = touchingBearOB or touchingBearFVG
 
-longCondition = allowLongs and bullishBias and structureTrend == 1 and priceInBullZone and close > open and strategy.position_size == 0
-shortCondition = allowShorts and bearishBias and structureTrend == -1 and priceInBearZone and close < open and strategy.position_size == 0
+var bool  bullZonePending    = false
+var int   bullZonePendingBar = na
+var float bullZonePendingTop = na
+
+var bool  bearZonePending       = false
+var int   bearZonePendingBar    = na
+var float bearZonePendingBottom = na
+
+// Yapı ters yöne dönerse bekleyen kurulumu iptal et
+if bearishBreak
+    bullZonePending := false
+if bullishBreak
+    bearZonePending := false
+
+if touchingBullZone and structureTrend == 1 and not bullZonePending
+    bullZonePending    := true
+    bullZonePendingBar := bar_index
+    bullZonePendingTop := touchingBullOB ? bullOB_top : fvgBull_top
+
+if bullZonePending and (bar_index - bullZonePendingBar) > confirmMaxBars
+    bullZonePending := false
+
+if touchingBearZone and structureTrend == -1 and not bearZonePending
+    bearZonePending       := true
+    bearZonePendingBar    := bar_index
+    bearZonePendingBottom := touchingBearOB ? bearOB_bottom : fvgBear_bottom
+
+if bearZonePending and (bar_index - bearZonePendingBar) > confirmMaxBars
+    bearZonePending := false
+
+bullReclaimConfirmed = bullZonePending and not na(bullZonePendingTop) and close > bullZonePendingTop and close > open
+bearReclaimConfirmed = bearZonePending and not na(bearZonePendingBottom) and close < bearZonePendingBottom and close < open
+
+if bullReclaimConfirmed
+    bullZonePending := false
+if bearReclaimConfirmed
+    bearZonePending := false
+
+// ============================================================================
+// GİRİŞ MANTIĞI: yapı yönü + trend filtresi + bölge onayı + momentum
+// ============================================================================
+
+longCondition  = allowLongs and bullishBias and structureTrend == 1 and bullReclaimConfirmed and momentumOkLong and strategy.position_size == 0
+shortCondition = allowShorts and bearishBias and structureTrend == -1 and bearReclaimConfirmed and momentumOkShort and strategy.position_size == 0
 
 // ============================================================================
 // RİSK YÖNETİMİ: stop-loss'a olan mesafeye göre pozisyon boyutu (%risk sabit)
@@ -285,17 +383,136 @@ if longCondition and not na(longQty) and longQty > 0
     strategy.entry("Long", strategy.long, qty=longQty)
     takeProfitPrice = close + longRiskPerUnit * rewardRiskRatio
     strategy.exit("Long Exit", from_entry="Long", stop=longStop, limit=takeProfitPrice)
-    alert("BTC LONG sinyali: OB/FVG + BOS/CHoCH confluence, fiyat=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    alert("BTC LONG sinyali: yapı+bölge+momentum confluence, fiyat=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
 
 if shortCondition and not na(shortQty) and shortQty > 0
     strategy.entry("Short", strategy.short, qty=shortQty)
     takeProfitPriceShort = close - shortRiskPerUnit * rewardRiskRatio
     strategy.exit("Short Exit", from_entry="Short", stop=shortStop, limit=takeProfitPriceShort)
-    alert("BTC SHORT sinyali: OB/FVG + BOS/CHoCH confluence, fiyat=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
+    alert("BTC SHORT sinyali: yapı+bölge+momentum confluence, fiyat=" + str.tostring(close, format.mintick), alert.freq_once_per_bar_close)
 
-// İsteğe bağlı: ters yönde yeni BOS/CHoCH oluşunca da çık (yapı bozulduysa bekleme)
 if useStructureExit and strategy.position_size > 0 and bearishBreak
     strategy.close("Long", comment="Ters BOS/CHoCH")
 
 if useStructureExit and strategy.position_size < 0 and bullishBreak
     strategy.close("Short", comment="Ters BOS/CHoCH")
+
+// ============================================================================
+// SİNYAL DURUMU: AL / SAT / BEKLE (kullanıcının istediği 3 durum)
+// ============================================================================
+
+positionChanged = strategy.position_size != strategy.position_size[1]
+justClosedLong  = positionChanged and strategy.position_size == 0 and strategy.position_size[1] > 0
+justClosedShort = positionChanged and strategy.position_size == 0 and strategy.position_size[1] < 0
+
+var string currentSignal = "BEKLE"
+
+if longCondition
+    currentSignal := "AL"
+else if shortCondition
+    currentSignal := "SAT"
+else if justClosedLong
+    currentSignal := "SAT"
+else if justClosedShort
+    currentSignal := "AL"
+else if strategy.position_size > 0
+    currentSignal := "AL"
+else if strategy.position_size < 0
+    currentSignal := "SAT"
+else
+    currentSignal := "BEKLE"
+
+if showSignalLabels and longCondition
+    label.new(bar_index, low, "AL", style=label.style_label_up, color=color.new(color.green, 0), textcolor=color.white, size=size.normal)
+if showSignalLabels and shortCondition
+    label.new(bar_index, high, "SAT", style=label.style_label_down, color=color.new(color.red, 0), textcolor=color.white, size=size.normal)
+if showSignalLabels and (justClosedLong or justClosedShort)
+    label.new(bar_index, justClosedLong ? high : low, "ÇIKIŞ",
+         style=justClosedLong ? label.style_label_down : label.style_label_up,
+         color=color.new(color.orange, 0), textcolor=color.black, size=size.small)
+
+// ============================================================================
+// DETAYLI GEREKÇE: her koşulun tek tek durumu + Long/Short skoru
+// ============================================================================
+
+countAndMissing(c1, n1, c2, n2, c3, n3, c4, n4, c5, n5) =>
+    int passed = 0
+    string missing = ""
+    if c1
+        passed += 1
+    else
+        missing += n1 + ", "
+    if c2
+        passed += 1
+    else
+        missing += n2 + ", "
+    if c3
+        passed += 1
+    else
+        missing += n3 + ", "
+    if c4
+        passed += 1
+    else
+        missing += n4 + ", "
+    if c5
+        passed += 1
+    else
+        missing += n5 + ", "
+    [passed, missing]
+
+bullZoneAvailable = (useOrderBlocks and bullOB_active) or (useFVG and fvgBull_active)
+bearZoneAvailable = (useOrderBlocks and bearOB_active) or (useFVG and fvgBear_active)
+
+[longPassed, longMissing]   = countAndMissing(bullishBias, "Trend(Boğa)", structureTrend == 1, "Yapı(BOS/CHoCH↑)", bullZoneAvailable, "Bölge(OB/FVG)", bullZonePending or bullReclaimConfirmed, "Dokunuş+Onay(Reclaim)", momentumOkLong, "Momentum(RSI/MACD)")
+[shortPassed, shortMissing] = countAndMissing(bearishBias, "Trend(Ayı)", structureTrend == -1, "Yapı(BOS/CHoCH↓)", bearZoneAvailable, "Bölge(OB/FVG)", bearZonePending or bearReclaimConfirmed, "Dokunuş+Onay(Reclaim)", momentumOkShort, "Momentum(RSI/MACD)")
+
+string decisionReason = ""
+if currentSignal == "AL" and longCondition
+    decisionReason := "YENİ LONG GİRİŞİ: " + str.tostring(longPassed) + "/5 koşul sağlandı (trend+yapı+bölge+onay+momentum aynı yönde)."
+else if currentSignal == "AL"
+    decisionReason := "LONG pozisyonda tutuluyor (stop-loss veya take-profit bekleniyor)."
+else if currentSignal == "SAT" and shortCondition
+    decisionReason := "YENİ SHORT GİRİŞİ: " + str.tostring(shortPassed) + "/5 koşul sağlandı."
+else if currentSignal == "SAT" and justClosedLong
+    decisionReason := "LONG POZİSYON KAPANDI (stop-loss veya take-profit tetiklendi)."
+else if currentSignal == "SAT" and justClosedShort
+    decisionReason := "SHORT POZİSYON KAPANDI."
+else if currentSignal == "SAT"
+    decisionReason := "SHORT pozisyonda tutuluyor (stop-loss veya take-profit bekleniyor)."
+else
+    decisionReason := "BEKLE: confluence tamamlanmadı, aşağıdaki eksik koşullara bakın."
+
+string detailText = "TREND: " + (bullishBias ? "Fiyat SMA üzerinde (Boğa)" : bearishBias ? "Fiyat SMA altında (Ayı)" : "Nötr") + "\n" +
+     "YAPI: " + (structureTrend == 1 ? "Son kırılım ↑ (Boğa yapısı)" : structureTrend == -1 ? "Son kırılım ↓ (Ayı yapısı)" : "Henüz belirsiz") + "\n" +
+     "ORDER BLOCK: Boğa=" + (bullOB_active ? "Aktif" : "Yok") + " | Ayı=" + (bearOB_active ? "Aktif" : "Yok") + "\n" +
+     "FVG: Boğa=" + (fvgBull_active ? "Aktif" : "Yok") + " | Ayı=" + (fvgBear_active ? "Aktif" : "Yok") + "\n" +
+     "MOMENTUM: RSI=" + str.tostring(rsiVal, "#.#") + " MACD Hist=" + str.tostring(macdHist, "#.##") + "\n" +
+     "LONG: " + str.tostring(longPassed) + "/5" + (longPassed < 5 ? " (eksik: " + longMissing + ")" : " ✓ TAMAMLANDI") + "\n" +
+     "SHORT: " + str.tostring(shortPassed) + "/5" + (shortPassed < 5 ? " (eksik: " + shortMissing + ")" : " ✓ TAMAMLANDI")
+
+// ============================================================================
+// PANEL: AL / SAT / BEKLE + en detaylı gerekçe
+// ============================================================================
+
+var table dash = table.new(position.top_right, 2, 7, border_width=1, border_color=color.gray, frame_color=color.gray, frame_width=1)
+
+signalColor = currentSignal == "AL" ? color.new(color.green, 0) : currentSignal == "SAT" ? color.new(color.red, 0) : color.new(color.gray, 30)
+
+if showDashboard and barstate.islast
+    table.cell(dash, 0, 0, "SİNYAL", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.normal)
+    table.cell(dash, 1, 0, currentSignal, text_color=color.white, bgcolor=signalColor, text_size=size.large)
+
+    table.cell(dash, 0, 1, "Trend", text_color=color.silver, bgcolor=color.new(color.black, 0), text_size=size.small)
+    table.cell(dash, 1, 1, bullishBias ? "BOĞA" : bearishBias ? "AYI" : "YATAY", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.small)
+
+    table.cell(dash, 0, 2, "Yapı", text_color=color.silver, bgcolor=color.new(color.black, 0), text_size=size.small)
+    table.cell(dash, 1, 2, structureTrend == 1 ? "BOĞA (↑)" : structureTrend == -1 ? "AYI (↓)" : "BELİRSİZ", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.small)
+
+    table.cell(dash, 0, 3, "Long / Short Skoru", text_color=color.silver, bgcolor=color.new(color.black, 0), text_size=size.small)
+    table.cell(dash, 1, 3, str.tostring(longPassed) + "/5  |  " + str.tostring(shortPassed) + "/5", text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.small)
+
+    table.cell(dash, 0, 4, "Karar", text_color=color.silver, bgcolor=color.new(color.black, 0), text_size=size.small)
+    table.cell(dash, 1, 4, decisionReason, text_color=color.yellow, bgcolor=color.new(color.black, 0), text_size=size.small)
+
+    table.cell(dash, 0, 5, "Detay", text_color=color.silver, bgcolor=color.new(color.black, 0), text_size=size.small)
+    table.cell(dash, 1, 5, detailText, text_color=color.white, bgcolor=color.new(color.black, 0), text_size=size.tiny, text_halign=text.align_left)
