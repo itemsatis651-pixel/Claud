@@ -3,8 +3,8 @@
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
 // PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones +
-// Fibonacci) — built incrementally, one module at a time, each confirmed
-// working before the next is added (Madde 122).
+// Fibonacci + Breakout/Retest FSM) — built incrementally, one module at a
+// time, each confirmed working before the next is added (Madde 122).
 //
 // MODULES INCLUDED SO FAR:
 //   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
@@ -18,24 +18,34 @@
 //      vs SWING_TIME, Madde 14) and are stable across reload/replay (no repaint).
 //   4. SUPPORT/RESISTANCE ZONE ENGINE + CLUSTERING (Madde 15, 16) — confirmed
 //      working by user (also caught and fixed an empty-array crash, v0.4.1).
-//   5. FIBONACCI ENGINE (Madde 17) — next item in the Phase C roadmap (Madde
-//      121). Levels (0.236/0.382/0.5/0.618/0.786) are computed EXCLUSIVELY
-//      from the same central confirmed-swing function used by Structure and
-//      Zones (Madde 14 v3.1 EK) — never a random last-N-bars high/low. The
-//      "active leg" is simply the two most recent confirmed swings (whichever
-//      swing has the later SWING_TIME is the leg's endpoint). Per Madde 17
-//      this is LOCATION evidence only: a "FIB TOUCH" diagnostic is shown, but
-//      nothing here ever claims FIB TOUCH = ENTRY — that still requires
-//      STRUCTURE + ZONE + TRIGGER + MOMENTUM, none of which exist as a
-//      combined decision yet.
+//   5. FIBONACCI ENGINE (Madde 17) — confirmed working by user (levels
+//      consistent with LAST SWING HIGH/LOW).
+//   6. BREAKOUT / RETEST STATE MACHINE (Madde 20-21) — last remaining item in
+//      the Phase C roadmap (Madde 121). Reuses the SAME crossedAboveLastHigh/
+//      crossedBelowLastLow break-of-level signals already computed for
+//      Structure's BOS/CHoCH (no new level logic invented, Madde 111). States:
+//      PRE_BREAKOUT -> BREAKOUT_CANDIDATE -> CONFIRMED_BREAKOUT (displacement
+//      >= N x ATR) -> RETEST_PENDING (price returns near the level) ->
+//      RETEST_ACCEPTED/ENTRY, or the failure path BREAKOUT_CANDIDATE/
+//      CONFIRMED_BREAKOUT/RETEST_PENDING -> FAILED_BREAKOUT ->
+//      REVERSAL_CANDIDATE, or STALE if a stage times out (Madde 20). Per
+//      Madde 21, "breakout quality" factors that belong to Participation/
+//      Momentum (volume, momentum confirmation) are NOT fabricated here since
+//      those modules don't exist yet — this FSM only uses STRUCTURE-family
+//      evidence (price vs. level). Reaching the ENTRY state is a structural
+//      label, NOT a trading signal — no alert/decision logic is wired to it.
+//
+//   Also, per user request: the temporary diagnostics table now has a
+//   COMPACT/FULL toggle (Diagnostics Detail input) and smaller text
+//   (text_size=tiny everywhere), since it was growing every module and risked
+//   becoming unusable on small screens before the real Madde 114 panel exists.
 //
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
-//   - The full breakout/retest state machine (Madde 20-21) — last remaining
-//     item in Phase C, a separate module from Zones/Fibonacci.
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation/
 //     volume evidence, Phase D) and HTF_IMPORTANCE (needs MTF, Phase E) are
 //     NOT computed — Zone exposes freshness/touch-count/EMA-confluence only,
-//     not a fabricated single "quality score".
+//     not a fabricated single "quality score". Same restraint applies to the
+//     Breakout FSM's displacement/retest checks (Structure-family only).
 //   - Regime Confidence's "structure agreement" factor (Madde 11) still NOT
 //     wired up, same as before — deferred to its own reviewable step.
 //   - Full Evidence Family aggregation / family caps (Madde 42) — deferred
@@ -44,15 +54,16 @@
 //     Alert engine (Madde 116-117), Setup/Trigger/Risk/Veto/Decision engines,
 //     WATCH/SETUP/... state transitions (state machine still only reaches
 //     DATA_INVALID/FLAT — Setup Classifier, which would unlock WATCH, does
-//     not exist yet).
+//     not exist yet). Phase C is now complete per the Madde 121 roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
-// `barsInRegime`, Structure state, and all Zone state only ever advance on
-// barstate.isconfirmed. ta.* functions (pivots, crossover/crossunder) are
-// called unconditionally every bar; only the resulting STATE UPDATE is gated.
-// Fibonacci levels are pure derivations of already-confirmed swing prices, so
-// they carry the same non-repaint guarantee without needing their own gate.
+// `barsInRegime`, Structure state, Zone state, and the Breakout FSM only ever
+// advance on barstate.isconfirmed. ta.* functions (pivots, crossover/
+// crossunder) are called unconditionally every bar; only the resulting STATE
+// UPDATE is gated. Fibonacci levels are pure derivations of already-confirmed
+// swing prices, so they carry the same non-repaint guarantee without needing
+// their own gate.
 //
 // v0.4.1 QA FIX (🤍, Madde 125): RE10045 on bar 0 of a fresh chart —
 // `array.get()` index out of bounds inside f_updateZones(). Root cause: Pine's
@@ -64,9 +75,9 @@
 // check before entering the `for`.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure + Zones + Fibonacci", shorttitle = "BTC-PRO-ABCDE", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM", shorttitle = "BTC-PRO-ABCDEF", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
 
-var string ENGINE_VERSION = "v0.5.0-phaseC-fibonacci"
+var string ENGINE_VERSION = "v0.6.0-phaseC-breakout-fsm"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -210,6 +221,49 @@ f_structEventLabel(StructureEvent e) =>
         StructureEvent.CHOCH_UP  => "CHoCH UP"
         StructureEvent.CHOCH_DOWN => "CHoCH DOWN"
         =>                            "NONE"
+
+// -----------------------------------------------------------------------------
+// BREAKOUT / RETEST STATE MACHINE ENUMS (Madde 20-21)
+// -----------------------------------------------------------------------------
+enum BreakoutDirection
+    NONE
+    UP
+    DOWN
+
+enum BreakoutFSMState
+    PRE_BREAKOUT
+    BREAKOUT_CANDIDATE
+    CONFIRMED_BREAKOUT
+    RETEST_PENDING
+    ENTRY
+    FAILED_BREAKOUT
+    REVERSAL_CANDIDATE
+    STALE
+
+f_breakoutDirLabel(BreakoutDirection d) =>
+    switch d
+        BreakoutDirection.UP   => "UP"
+        BreakoutDirection.DOWN => "DOWN"
+        =>                         "NONE"
+
+f_breakoutStateLabel(BreakoutFSMState s) =>
+    switch s
+        BreakoutFSMState.PRE_BREAKOUT       => "PRE_BREAKOUT"
+        BreakoutFSMState.BREAKOUT_CANDIDATE => "BREAKOUT_CANDIDATE"
+        BreakoutFSMState.CONFIRMED_BREAKOUT => "CONFIRMED_BREAKOUT"
+        BreakoutFSMState.RETEST_PENDING     => "RETEST_PENDING"
+        BreakoutFSMState.ENTRY              => "ENTRY (structural only)"
+        BreakoutFSMState.FAILED_BREAKOUT    => "FAILED_BREAKOUT"
+        BreakoutFSMState.REVERSAL_CANDIDATE => "REVERSAL_CANDIDATE"
+        BreakoutFSMState.STALE              => "STALE"
+        =>                                      "UNKNOWN"
+
+// Idle = a fresh BREAKOUT_CANDIDATE may start from here (Madde 20). Pure
+// function, no outer-scope references, safe to define this early.
+f_isIdleBreakoutState(BreakoutFSMState s) =>
+    s == BreakoutFSMState.PRE_BREAKOUT or s == BreakoutFSMState.STALE or
+     s == BreakoutFSMState.FAILED_BREAKOUT or s == BreakoutFSMState.REVERSAL_CANDIDATE or
+     s == BreakoutFSMState.ENTRY
 
 // -----------------------------------------------------------------------------
 // SUPPORT/RESISTANCE ZONE TYPE + HELPERS (Madde 15, 16) — built ONLY on top of
@@ -409,8 +463,23 @@ i_showFib = input.bool(true, "Show Fibonacci Levels", group = grpFib)
 i_fibTouchAtrMult = input.float(0.25, "Fib Touch Tolerance (x ATR)", minval = 0.01, group = grpFib,
      tooltip = "Yalnızca teşhis içindir (Madde 17: FIB TOUCH ≠ ENTRY).")
 
+// -----------------------------------------------------------------------------
+// INPUTS — BREAKOUT / RETEST STATE MACHINE (Madde 20-21)
+// -----------------------------------------------------------------------------
+grpBreakout = "Breakout / Retest State Machine"
+i_confirmDisplacementAtrMult = input.float(0.5, "Confirm Displacement (x ATR)", minval = 0.05, group = grpBreakout,
+     tooltip = "BREAKOUT_CANDIDATE -> CONFIRMED_BREAKOUT için seviyenin ötesinde gereken minimum mesafe.")
+i_candidateMaxBars = input.int(10, "Candidate Timeout (bars)", minval = 1, group = grpBreakout,
+     tooltip = "Bu bar sayısında displacement onaylanmazsa STALE (Madde 20).")
+i_retestAtrMult = input.float(0.3, "Retest Touch Tolerance (x ATR)", minval = 0.05, group = grpBreakout)
+i_retestMaxBars = input.int(30, "Retest Timeout (bars since confirmed)", minval = 1, group = grpBreakout,
+     tooltip = "Retest bu süre içinde sonuçlanmazsa STALE (Madde 20).")
+i_showBreakoutMarks = input.bool(true, "Show Breakout FSM Markers", group = grpBreakout)
+
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
+i_diagDetail = input.string("FULL", "Diagnostics Detail", options = ["COMPACT", "FULL"], group = grpDebug,
+     tooltip = "COMPACT: yalnızca kritik özet (10 satır, küçük ekranlar için). FULL: tüm modül çıktıları.")
 i_showBg    = input.bool(true, "Highlight DATA_INVALID bars", group = grpDebug)
 
 // -----------------------------------------------------------------------------
@@ -586,6 +655,13 @@ var array<Zone> supportZones    = array.new<Zone>()
 crossedAboveLastHigh = ta.crossover(close, lastSwingHighPrice)
 crossedBelowLastLow  = ta.crossunder(close, lastSwingLowPrice)
 
+// Captured BEFORE this bar's swing registration below can mutate
+// lastSwingHighPrice/lastSwingLowPrice — the Breakout FSM (further below)
+// needs the level as it stood WHEN the cross happened, not a possibly
+// already-updated value from later in this same confirmed bar.
+brokenHighLevel = lastSwingHighPrice
+brokenLowLevel  = lastSwingLowPrice
+
 bosUpEvent    = false
 bosDownEvent  = false
 chochUpEvent  = false
@@ -676,6 +752,82 @@ fibLegText = not fibValid ? "N/A (need 2 opposite confirmed swings)" :
      "DOWN: " + str.tostring(lastSwingHighPrice) + " -> " + str.tostring(lastSwingLowPrice)
 
 // -----------------------------------------------------------------------------
+// BREAKOUT / RETEST STATE MACHINE (Madde 20-21) — reuses crossedAboveLastHigh/
+// crossedBelowLastLow (already computed above for BOS/CHoCH) as the break
+// trigger; no new level logic. Only STRUCTURE-family evidence (price vs.
+// level) is used — no fabricated volume/momentum "quality" (Madde 21, those
+// modules don't exist yet).
+// -----------------------------------------------------------------------------
+var BreakoutFSMState breakoutState = BreakoutFSMState.PRE_BREAKOUT
+var BreakoutDirection breakoutDir  = BreakoutDirection.NONE
+var float breakoutLevel    = na
+var int   breakoutBar      = na   // bar the candidate started
+var int   breakoutConfBar  = na   // bar displacement was confirmed
+var int   breakoutStateBar = na   // bar of the last state change (for age display)
+
+if barstate.isconfirmed
+    if crossedAboveLastHigh and f_isIdleBreakoutState(breakoutState)
+        breakoutState := BreakoutFSMState.BREAKOUT_CANDIDATE
+        breakoutDir := BreakoutDirection.UP
+        breakoutLevel := brokenHighLevel
+        breakoutBar := bar_index
+        breakoutConfBar := na
+        breakoutStateBar := bar_index
+    else if crossedBelowLastLow and f_isIdleBreakoutState(breakoutState)
+        breakoutState := BreakoutFSMState.BREAKOUT_CANDIDATE
+        breakoutDir := BreakoutDirection.DOWN
+        breakoutLevel := brokenLowLevel
+        breakoutBar := bar_index
+        breakoutConfBar := na
+        breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE
+        candDisplacement = breakoutDir == BreakoutDirection.UP ? close - breakoutLevel : breakoutLevel - close
+        candFailed = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        if candFailed
+            breakoutState := BreakoutFSMState.FAILED_BREAKOUT
+            breakoutStateBar := bar_index
+        else if atrValid and candDisplacement >= atrValue * i_confirmDisplacementAtrMult
+            breakoutState := BreakoutFSMState.CONFIRMED_BREAKOUT
+            breakoutConfBar := bar_index
+            breakoutStateBar := bar_index
+        else if (bar_index - breakoutBar) > i_candidateMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT
+        confFailed = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        touchedLevel = atrValid and (breakoutDir == BreakoutDirection.UP ?
+             low <= breakoutLevel + atrValue * i_retestAtrMult :
+             high >= breakoutLevel - atrValue * i_retestAtrMult)
+        if confFailed
+            breakoutState := BreakoutFSMState.FAILED_BREAKOUT
+            breakoutStateBar := bar_index
+        else if touchedLevel
+            breakoutState := BreakoutFSMState.RETEST_PENDING
+            breakoutStateBar := bar_index
+        else if not na(breakoutConfBar) and (bar_index - breakoutConfBar) > i_retestMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.RETEST_PENDING
+        retestRejected = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        retestAccepted = breakoutDir == BreakoutDirection.UP ? close > breakoutLevel : close < breakoutLevel
+        if retestRejected
+            breakoutState := BreakoutFSMState.REVERSAL_CANDIDATE
+            breakoutStateBar := bar_index
+        else if retestAccepted
+            breakoutState := BreakoutFSMState.ENTRY
+            breakoutStateBar := bar_index
+        else if not na(breakoutConfBar) and (bar_index - breakoutConfBar) > i_retestMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+breakoutStateAgeText = na(breakoutStateBar) ? "" : " (" + str.tostring(bar_index - breakoutStateBar) + " bars ago)"
+breakoutStateText = f_breakoutStateLabel(breakoutState) + (breakoutDir == BreakoutDirection.NONE ? "" : " " + f_breakoutDirLabel(breakoutDir)) + breakoutStateAgeText
+breakoutLevelText = na(breakoutLevel) ? "N/A" : str.tostring(breakoutLevel)
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -701,102 +853,150 @@ if staleDataDetected
     array.push(reasons, "STALE FEED")
 reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
-var table debugTable = table.new(position.top_right, 2, 26, border_width = 1)
+// Row count depends on i_diagDetail, resolved once at table creation (inputs
+// are known constants throughout the run, so this ternary is safe here).
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 10 : 28, border_width = 1)
 
-if i_showDebug and barstate.islast
-    table.cell(debugTable, 0, 0, "ENGINE", text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
-    table.cell(debugTable, 1, 0, ENGINE_VERSION, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
+    // Curated 10-row summary — added per user request once the FULL table
+    // (28 rows) started risking overflow on smaller screens/panes; FULL
+    // still has everything below for deeper debugging.
+    table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    table.cell(debugTable, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 1, "STATE", text_halign = text.align_left)
-    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_color = currentState == EngineState.DATA_INVALID ? color.red : color.lime, text_halign = text.align_left)
+    table.cell(debugTable, 0, 1, "STATE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = currentState == EngineState.DATA_INVALID ? color.red : color.lime, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 2, "DATA GATE (live)", text_halign = text.align_left)
-    table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
+    table.cell(debugTable, 0, 2, "DATA GATE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_size = size.tiny, text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 3, "SYMBOL", text_halign = text.align_left)
-    table.cell(debugTable, 1, 3, syminfo.tickerid, text_halign = text.align_left)
+    table.cell(debugTable, 0, 3, "ISSUES", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 3, reasonsText, text_size = size.tiny, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 4, "EXCHANGE", text_halign = text.align_left)
-    table.cell(debugTable, 1, 4, syminfo.prefix + (exchangeOK ? "" : " (expected " + i_expectedExchange + ")"), text_color = exchangeOK ? color.gray : color.orange, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 5, "INSTRUMENT", text_halign = text.align_left)
-    table.cell(debugTable, 1, 5, syminfo.basecurrency + "/" + syminfo.currency, text_color = instrumentOK ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 6, "MARKET TYPE", text_halign = text.align_left)
-    table.cell(debugTable, 1, 6, marketTypeGuess, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 7, "BARS", text_halign = text.align_left)
-    table.cell(debugTable, 1, 7, str.tostring(bar_index + 1) + " / " + str.tostring(i_minBars), text_color = sufficientHistory ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 8, "OHLC / VOLUME", text_halign = text.align_left)
-    table.cell(debugTable, 1, 8, (ohlcValid ? "OK" : "INVALID") + " / " + (volumeValid ? "OK" : "NA"), text_color = (ohlcValid and volumeValid) ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 9, "GAP / ABNORMAL / STALE", text_halign = text.align_left)
-    table.cell(debugTable, 1, 9, (dataGapDetected or abnormalBar or staleDataDetected) ?
-         ((dataGapDetected ? "GAP " : "") + (abnormalBar ? "ABN " : "") + (staleDataDetected ? "STALE" : "")) : "OK",
-         text_color = (dataGapDetected or abnormalBar or staleDataDetected) ? color.red : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 10, "ISSUES", text_halign = text.align_left)
-    table.cell(debugTable, 1, 10, reasonsText, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 11, "REGIME", text_halign = text.align_left)
-    table.cell(debugTable, 1, 11, f_regimeLabel(primaryRegime) + " (" + str.tostring(barsInRegime) + " bars)",
-         text_color = primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : primaryRegime == RegimeType.RANGE ? color.yellow : color.gray,
+    table.cell(debugTable, 0, 4, "REGIME", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 4, f_regimeLabel(primaryRegime) + " / " + f_confLabel(regimeConfidence), text_size = size.tiny,
+         text_color = primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 12, "REGIME CONFIDENCE", text_halign = text.align_left)
-    table.cell(debugTable, 1, 12, f_confLabel(regimeConfidence),
-         text_color = regimeConfidence == ConfidenceLevel.HIGH ? color.lime : regimeConfidence == ConfidenceLevel.MEDIUM ? color.yellow : color.red,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 13, "TREND VOTES (bull/bear)", text_halign = text.align_left)
-    table.cell(debugTable, 1, 13, str.tostring(bullVotes) + "/4  " + str.tostring(bearVotes) + "/4", text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 14, "ADX(" + str.tostring(i_adxLen) + ")", text_halign = text.align_left)
-    table.cell(debugTable, 1, 14, not na(adxValue) ? str.tostring(adxValue, "#.##") + (trendStrong ? " (strong)" : " (weak)") : "N/A",
-         text_color = trendStrong ? color.gray : color.silver, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 15, "VOLATILITY", text_halign = text.align_left)
-    table.cell(debugTable, 1, 15, f_volLabel(volRegime) + (not na(atrPctRank) ? " (" + str.tostring(atrPctRank, "#") + "pct)" : ""),
-         text_color = volRegime == VolRegime.EXTREME_VOL ? color.red : volRegime == VolRegime.HIGH_VOL ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 16, "STRUCTURE BIAS", text_halign = text.align_left)
-    table.cell(debugTable, 1, 16, f_biasLabel(structureBias),
+    table.cell(debugTable, 0, 5, "STRUCTURE BIAS", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 5, f_biasLabel(structureBias), text_size = size.tiny,
          text_color = structureBias == StructureBias.BULLISH ? color.lime : structureBias == StructureBias.BEARISH ? color.red : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 17, "LAST SWING HIGH", text_halign = text.align_left)
+    table.cell(debugTable, 0, 6, "BREAKOUT FSM", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 6, f_breakoutStateLabel(breakoutState) + (breakoutDir == BreakoutDirection.NONE ? "" : " " + f_breakoutDirLabel(breakoutDir)), text_size = size.tiny, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 7, "NEAREST RESISTANCE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 7, resZoneText, text_size = size.tiny, text_color = resZoneText == "NONE" ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 8, "NEAREST SUPPORT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 8, supZoneText, text_size = size.tiny, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 9, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 9, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+
+if i_showDebug and barstate.islast and i_diagDetail == "FULL"
+    table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    table.cell(debugTable, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 1, "STATE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = currentState == EngineState.DATA_INVALID ? color.red : color.lime, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 2, "DATA GATE (live)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_size = size.tiny, text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 3, "SYMBOL", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 3, syminfo.tickerid, text_size = size.tiny, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 4, "EXCHANGE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 4, syminfo.prefix + (exchangeOK ? "" : " (expected " + i_expectedExchange + ")"), text_size = size.tiny, text_color = exchangeOK ? color.gray : color.orange, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 5, "INSTRUMENT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 5, syminfo.basecurrency + "/" + syminfo.currency, text_size = size.tiny, text_color = instrumentOK ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 6, "MARKET TYPE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 6, marketTypeGuess, text_size = size.tiny, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 7, "BARS", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 7, str.tostring(bar_index + 1) + " / " + str.tostring(i_minBars), text_size = size.tiny, text_color = sufficientHistory ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 8, "OHLC / VOLUME", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 8, (ohlcValid ? "OK" : "INVALID") + " / " + (volumeValid ? "OK" : "NA"), text_size = size.tiny, text_color = (ohlcValid and volumeValid) ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 9, "GAP / ABNORMAL / STALE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 9, (dataGapDetected or abnormalBar or staleDataDetected) ?
+         ((dataGapDetected ? "GAP " : "") + (abnormalBar ? "ABN " : "") + (staleDataDetected ? "STALE" : "")) : "OK",
+         text_size = size.tiny, text_color = (dataGapDetected or abnormalBar or staleDataDetected) ? color.red : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 10, "ISSUES", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 10, reasonsText, text_size = size.tiny, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 11, "REGIME", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 11, f_regimeLabel(primaryRegime) + " (" + str.tostring(barsInRegime) + " bars)", text_size = size.tiny,
+         text_color = primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : primaryRegime == RegimeType.RANGE ? color.yellow : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 12, "REGIME CONFIDENCE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 12, f_confLabel(regimeConfidence), text_size = size.tiny,
+         text_color = regimeConfidence == ConfidenceLevel.HIGH ? color.lime : regimeConfidence == ConfidenceLevel.MEDIUM ? color.yellow : color.red,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 13, "TREND VOTES (bull/bear)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 13, str.tostring(bullVotes) + "/4  " + str.tostring(bearVotes) + "/4", text_size = size.tiny, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 14, "ADX(" + str.tostring(i_adxLen) + ")", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 14, not na(adxValue) ? str.tostring(adxValue, "#.##") + (trendStrong ? " (strong)" : " (weak)") : "N/A",
+         text_size = size.tiny, text_color = trendStrong ? color.gray : color.silver, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 15, "VOLATILITY", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 15, f_volLabel(volRegime) + (not na(atrPctRank) ? " (" + str.tostring(atrPctRank, "#") + "pct)" : ""),
+         text_size = size.tiny, text_color = volRegime == VolRegime.EXTREME_VOL ? color.red : volRegime == VolRegime.HIGH_VOL ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 16, "STRUCTURE BIAS", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 16, f_biasLabel(structureBias), text_size = size.tiny,
+         text_color = structureBias == StructureBias.BULLISH ? color.lime : structureBias == StructureBias.BEARISH ? color.red : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 17, "LAST SWING HIGH", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 17, f_swingLabel(lastHighLabel) + " " + (na(lastSwingHighPrice) ? "N/A" : str.tostring(lastSwingHighPrice)) + " (" + swingHighAgeText + ")",
-         text_halign = text.align_left)
+         text_size = size.tiny, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 18, "LAST SWING LOW", text_halign = text.align_left)
+    table.cell(debugTable, 0, 18, "LAST SWING LOW", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 18, f_swingLabel(lastLowLabel) + " " + (na(lastSwingLowPrice) ? "N/A" : str.tostring(lastSwingLowPrice)) + " (" + swingLowAgeText + ")",
-         text_halign = text.align_left)
+         text_size = size.tiny, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 19, "LAST EVENT", text_halign = text.align_left)
-    table.cell(debugTable, 1, 19, f_structEventLabel(lastStructureEvent) + lastEventAgeText,
+    table.cell(debugTable, 0, 19, "LAST EVENT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 19, f_structEventLabel(lastStructureEvent) + lastEventAgeText, text_size = size.tiny,
          text_color = lastStructureEvent == StructureEvent.BOS_UP or lastStructureEvent == StructureEvent.CHOCH_UP ? color.lime :
                        lastStructureEvent == StructureEvent.BOS_DOWN or lastStructureEvent == StructureEvent.CHOCH_DOWN ? color.red : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 20, "ZONES (R/S)", text_halign = text.align_left)
-    table.cell(debugTable, 1, 20, str.tostring(array.size(resistanceZones)) + " / " + str.tostring(array.size(supportZones)), text_halign = text.align_left)
+    table.cell(debugTable, 0, 20, "BREAKOUT STATE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 20, breakoutStateText, text_size = size.tiny,
+         text_color = breakoutState == BreakoutFSMState.ENTRY ? color.lime : breakoutState == BreakoutFSMState.FAILED_BREAKOUT or breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE ? color.red : color.gray,
+         text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 21, "NEAREST RESISTANCE", text_halign = text.align_left)
-    table.cell(debugTable, 1, 21, resZoneText, text_color = resZoneText == "NONE" ? color.gray : color.red, text_halign = text.align_left)
+    table.cell(debugTable, 0, 21, "BREAKOUT LEVEL", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 21, breakoutLevelText, text_size = size.tiny, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 22, "NEAREST SUPPORT", text_halign = text.align_left)
-    table.cell(debugTable, 1, 22, supZoneText, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
+    table.cell(debugTable, 0, 22, "ZONES (R/S)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 22, str.tostring(array.size(resistanceZones)) + " / " + str.tostring(array.size(supportZones)), text_size = size.tiny, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 23, "FIB LEG", text_halign = text.align_left)
-    table.cell(debugTable, 1, 23, fibLegText, text_color = fibValid ? color.gray : color.silver, text_halign = text.align_left)
+    table.cell(debugTable, 0, 23, "NEAREST RESISTANCE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 23, resZoneText, text_size = size.tiny, text_color = resZoneText == "NONE" ? color.gray : color.red, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 24, "FIB TOUCH", text_halign = text.align_left)
-    table.cell(debugTable, 1, 24, fibTouchLabel, text_color = fibTouchLabel == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
+    table.cell(debugTable, 0, 24, "NEAREST SUPPORT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 24, supZoneText, text_size = size.tiny, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 25, "REQUEST BUDGET", text_halign = text.align_left)
-    table.cell(debugTable, 1, 25, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 25, "FIB LEG", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 25, fibLegText, text_size = size.tiny, text_color = fibValid ? color.gray : color.silver, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 26, "FIB TOUCH", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 26, fibTouchLabel, text_size = size.tiny, text_color = fibTouchLabel == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 27, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 27, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -818,6 +1018,24 @@ if i_showStructureMarks and barstate.isconfirmed and (bosUpEvent or chochUpEvent
 if i_showStructureMarks and barstate.isconfirmed and (bosDownEvent or chochDownEvent)
     label.new(bar_index, low, bosDownEvent ? "BOS" : "CHoCH", style = label.style_label_up,
          color = bosDownEvent ? color.new(color.red, 0) : color.new(color.orange, 0), textcolor = color.white, size = size.tiny)
+
+// Breakout FSM: only shown while an attempt is active (na while idle, via
+// plot.style_linebr so the line breaks cleanly instead of dragging a stale
+// level across idle periods).
+plot(i_showBreakoutMarks and not f_isIdleBreakoutState(breakoutState) ? breakoutLevel : na, "Breakout Level",
+     color = color.new(color.fuchsia, 40), style = plot.style_linebr, linewidth = 1)
+
+if i_showBreakoutMarks and barstate.isconfirmed and breakoutStateBar == bar_index
+    breakoutMarkColor = breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT ? color.blue :
+         breakoutState == BreakoutFSMState.RETEST_PENDING ? color.orange :
+         breakoutState == BreakoutFSMState.ENTRY ? color.lime :
+         breakoutState == BreakoutFSMState.FAILED_BREAKOUT ? color.red :
+         breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE ? color.maroon :
+         breakoutState == BreakoutFSMState.STALE ? color.gray :
+         color.silver
+    label.new(bar_index, breakoutDir == BreakoutDirection.UP ? high : low, f_breakoutStateLabel(breakoutState),
+         style = breakoutDir == BreakoutDirection.UP ? label.style_label_down : label.style_label_up,
+         color = color.new(breakoutMarkColor, 0), textcolor = color.white, size = size.tiny)
 
 var array<box> zoneBoxes = array.new<box>()
 
