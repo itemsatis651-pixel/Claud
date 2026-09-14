@@ -125,6 +125,15 @@
 // guarding every such loop (f_upsertZone, f_updateZones, f_nearestZone, and
 // the three zone/box-drawing loops) with an explicit `array.size(...) > 0`
 // check before entering the `for`.
+//
+// v0.9.1 QA FIX (🤍, Madde 125): CE10173 compile error — "Cannot assign a
+// value of the 'simple na' type to the 'lastPriceAboveVwap' variable. The
+// variable is declared with the 'const bool' type." Root cause: a Pine v6
+// bool-specific quirk — `var bool x = na` infers x as `const bool` (unlike
+// `var float x = na` / `var int x = na`, which infer permissively), so the
+// later `lastPriceAboveVwap := priceAboveVwap` (a runtime series bool) gets
+// rejected as a series-into-const assignment. Fixed by casting the
+// initializer explicitly: `var bool lastPriceAboveVwap = bool(na)`.
 // =============================================================================
 
 // Title/shorttitle kept short and FIXED on purpose (TradingView hard limits:
@@ -134,7 +143,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
 
-var string ENGINE_VERSION = "v0.9.0-phaseD-participation"
+var string ENGINE_VERSION = "v0.9.1-phaseD-participation-fix"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -1182,7 +1191,7 @@ var ParticipationState     lastParticipationState = ParticipationState.NORMAL
 var ParticipationDirection lastParticipationDir   = ParticipationDirection.NONE
 var float                  lastRvol               = na
 var float                  lastVwap               = na
-var bool                   lastPriceAboveVwap      = na
+var bool                   lastPriceAboveVwap      = bool(na)
 
 if barstate.isconfirmed
     lastParticipationState := partState
