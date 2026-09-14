@@ -2,9 +2,9 @@
 
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
-// PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones)
-// — built incrementally, one module at a time, each confirmed working before
-// the next is added (Madde 122).
+// PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones +
+// Fibonacci) — built incrementally, one module at a time, each confirmed
+// working before the next is added (Madde 122).
 //
 // MODULES INCLUDED SO FAR:
 //   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
@@ -16,19 +16,22 @@
 //      BOS/CHoCH (Madde 14, 61) — confirmed working by user, including that
 //      swing markers only appear ~pivotRight bars after the fact (KNOWN_TIME
 //      vs SWING_TIME, Madde 14) and are stable across reload/replay (no repaint).
-//   4. SUPPORT/RESISTANCE ZONE ENGINE + CLUSTERING (Madde 15, 16) — next module
-//      per the master hierarchy (Madde 4 groups this stage as "LOCATION /
-//      ZONE", directly after MARKET STRUCTURE). Zones are built EXCLUSIVELY
-//      from the central confirmed-swing function above (Madde 14 v3.1 EK) —
-//      no separate pivot logic was invented here. Zone body = wick-to-body of
-//      the swing's own candle (no arbitrary ATR-width guess). Nearby zones are
-//      merged using ATR-relative distance (Madde 16); broken zones are flagged,
-//      not deleted; freshness degrades with age and with repeated touches
-//      ("exhausted", Madde 16).
+//   4. SUPPORT/RESISTANCE ZONE ENGINE + CLUSTERING (Madde 15, 16) — confirmed
+//      working by user (also caught and fixed an empty-array crash, v0.4.1).
+//   5. FIBONACCI ENGINE (Madde 17) — next item in the Phase C roadmap (Madde
+//      121). Levels (0.236/0.382/0.5/0.618/0.786) are computed EXCLUSIVELY
+//      from the same central confirmed-swing function used by Structure and
+//      Zones (Madde 14 v3.1 EK) — never a random last-N-bars high/low. The
+//      "active leg" is simply the two most recent confirmed swings (whichever
+//      swing has the later SWING_TIME is the leg's endpoint). Per Madde 17
+//      this is LOCATION evidence only: a "FIB TOUCH" diagnostic is shown, but
+//      nothing here ever claims FIB TOUCH = ENTRY — that still requires
+//      STRUCTURE + ZONE + TRIGGER + MOMENTUM, none of which exist as a
+//      combined decision yet.
 //
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
-//   - Fibonacci (Madde 17) and the full breakout/retest state machine (Madde
-//     20-21) — next items in Phase C, separate modules from Zones.
+//   - The full breakout/retest state machine (Madde 20-21) — last remaining
+//     item in Phase C, a separate module from Zones/Fibonacci.
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation/
 //     volume evidence, Phase D) and HTF_IMPORTANCE (needs MTF, Phase E) are
 //     NOT computed — Zone exposes freshness/touch-count/EMA-confluence only,
@@ -48,6 +51,8 @@
 // `barsInRegime`, Structure state, and all Zone state only ever advance on
 // barstate.isconfirmed. ta.* functions (pivots, crossover/crossunder) are
 // called unconditionally every bar; only the resulting STATE UPDATE is gated.
+// Fibonacci levels are pure derivations of already-confirmed swing prices, so
+// they carry the same non-repaint guarantee without needing their own gate.
 //
 // v0.4.1 QA FIX (🤍, Madde 125): RE10045 on bar 0 of a fresh chart —
 // `array.get()` index out of bounds inside f_updateZones(). Root cause: Pine's
@@ -59,9 +64,9 @@
 // check before entering the `for`.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure + Zones", shorttitle = "BTC-PRO-ABCD", overlay = true, max_labels_count = 200, max_boxes_count = 50)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure + Zones + Fibonacci", shorttitle = "BTC-PRO-ABCDE", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
 
-var string ENGINE_VERSION = "v0.4.1-phaseC-zones-fix"
+var string ENGINE_VERSION = "v0.5.0-phaseC-fibonacci"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -100,8 +105,11 @@ var EngineState currentState = EngineState.DATA_INVALID
 // output can be explicitly tagged with the family it belongs to as it is
 // built, instead of retrofitting the taxonomy later.
 // Producers so far: CONTEXT_REGIME + VOLATILITY (Market Regime), STRUCTURE
-// (also standing in for "Dow" per Madde 61), LOCATION (this Zone module —
-// Madde 4 names the combined hierarchy stage "LOCATION / ZONE").
+// (also standing in for "Dow" per Madde 61), LOCATION (Zone module AND
+// Fibonacci module both — Madde 4 names the combined hierarchy stage
+// "LOCATION / ZONE"; Madde 17 explicitly calls Fibonacci "location evidence",
+// so it shares the SAME family as Zone rather than getting its own — this
+// matters once family caps (Madde 42) exist, to avoid double counting).
 // -----------------------------------------------------------------------------
 enum EvidenceFamily
     CONTEXT_REGIME
@@ -298,6 +306,36 @@ f_zoneSummary(array<Zone> zones, int idx, float ef, float em, float es, float at
     result
 
 // -----------------------------------------------------------------------------
+// FIBONACCI HELPERS (Madde 17) — computed only from the two most recently
+// confirmed structural swings (the central swing function above), never a
+// random last-N-bars high/low. Pure functions, no outer-scope references.
+// -----------------------------------------------------------------------------
+f_fibLevel(bool legUp, float hi, float lo, float ratio) =>
+    legUp ? hi - (hi - lo) * ratio : lo + (hi - lo) * ratio
+
+f_fibTouchLabel(float price, float f236, float f382, float f500, float f618, float f786, float tol) =>
+    string result = "NONE"
+    if not na(f236) and math.abs(price - f236) <= tol
+        result := "0.236"
+    if not na(f382) and math.abs(price - f382) <= tol
+        result := "0.382"
+    if not na(f500) and math.abs(price - f500) <= tol
+        result := "0.5"
+    if not na(f618) and math.abs(price - f618) <= tol
+        result := "0.618"
+    if not na(f786) and math.abs(price - f786) <= tol
+        result := "0.786"
+    result
+
+f_drawFibLevel(array<line> lines, array<label> labels, int startBar, int endBar, float level, string txt, color col) =>
+    if not na(level)
+        ln = line.new(startBar, level, endBar, level, color = col, style = line.style_dashed)
+        array.push(lines, ln)
+        lb = label.new(endBar, level, txt, style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = size.tiny)
+        array.push(labels, lb)
+    true
+
+// -----------------------------------------------------------------------------
 // INPUTS — DATA GATE
 // -----------------------------------------------------------------------------
 grpSymbol = "Data Gate — Symbol & Source Validation"
@@ -362,6 +400,14 @@ i_exhaustTouches = input.int(4, "Exhausted After N Touches", minval = 1, group =
      tooltip = "Madde 16 — touch sayısı tek başına kalite değildir; çok test edilen zone exhausted sayılır.")
 i_emaConfluenceAtrMult = input.float(0.5, "EMA Confluence Distance (x ATR)", minval = 0.05, group = grpZone)
 i_showZones = input.bool(true, "Show Zones on Chart", group = grpZone)
+
+// -----------------------------------------------------------------------------
+// INPUTS — FIBONACCI (Madde 17)
+// -----------------------------------------------------------------------------
+grpFib = "Fibonacci"
+i_showFib = input.bool(true, "Show Fibonacci Levels", group = grpFib)
+i_fibTouchAtrMult = input.float(0.25, "Fib Touch Tolerance (x ATR)", minval = 0.01, group = grpFib,
+     tooltip = "Yalnızca teşhis içindir (Madde 17: FIB TOUCH ≠ ENTRY).")
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -607,6 +653,29 @@ resZoneText = f_zoneSummary(resistanceZones, nearestResIdx, emaFast, emaMid, ema
 supZoneText = f_zoneSummary(supportZones, nearestSupIdx, emaFast, emaMid, emaSlow, atrValue, i_emaConfluenceAtrMult, bar_index, i_freshAgeBars, i_staleAgeBars, i_exhaustTouches)
 
 // -----------------------------------------------------------------------------
+// FIBONACCI (Madde 17) — active leg = the two most recently confirmed swings
+// (central swing function above); level(ratio) is a pure derivation of those
+// already-confirmed prices, so no separate confirmed-bar gate is needed here.
+// -----------------------------------------------------------------------------
+legIsUp   = not na(lastSwingHighSwingBar) and not na(lastSwingLowSwingBar) and lastSwingHighSwingBar > lastSwingLowSwingBar
+legIsDown = not na(lastSwingHighSwingBar) and not na(lastSwingLowSwingBar) and lastSwingLowSwingBar > lastSwingHighSwingBar
+fibValid  = legIsUp or legIsDown
+legStartBar = legIsUp ? lastSwingLowSwingBar : legIsDown ? lastSwingHighSwingBar : na
+
+fib236 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.236) : na
+fib382 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.382) : na
+fib500 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.5)   : na
+fib618 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.618) : na
+fib786 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.786) : na
+
+// Diagnostic only — Madde 17: FIB TOUCH ≠ ENTRY. Real confirmation still
+// needs STRUCTURE + ZONE + TRIGGER + MOMENTUM, none combined yet.
+fibTouchLabel = f_fibTouchLabel(close, fib236, fib382, fib500, fib618, fib786, atrValue * i_fibTouchAtrMult)
+fibLegText = not fibValid ? "N/A (need 2 opposite confirmed swings)" :
+     legIsUp ? "UP: " + str.tostring(lastSwingLowPrice) + " -> " + str.tostring(lastSwingHighPrice) :
+     "DOWN: " + str.tostring(lastSwingHighPrice) + " -> " + str.tostring(lastSwingLowPrice)
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -632,7 +701,7 @@ if staleDataDetected
     array.push(reasons, "STALE FEED")
 reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
-var table debugTable = table.new(position.top_right, 2, 24, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, 26, border_width = 1)
 
 if i_showDebug and barstate.islast
     table.cell(debugTable, 0, 0, "ENGINE", text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -720,8 +789,14 @@ if i_showDebug and barstate.islast
     table.cell(debugTable, 0, 22, "NEAREST SUPPORT", text_halign = text.align_left)
     table.cell(debugTable, 1, 22, supZoneText, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 23, "REQUEST BUDGET", text_halign = text.align_left)
-    table.cell(debugTable, 1, 23, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 23, "FIB LEG", text_halign = text.align_left)
+    table.cell(debugTable, 1, 23, fibLegText, text_color = fibValid ? color.gray : color.silver, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 24, "FIB TOUCH", text_halign = text.align_left)
+    table.cell(debugTable, 1, 24, fibTouchLabel, text_color = fibTouchLabel == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 25, "REQUEST BUDGET", text_halign = text.align_left)
+    table.cell(debugTable, 1, 25, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -772,3 +847,30 @@ if i_showZones and barstate.islast
                  bgcolor = z.broken ? color.new(color.lime, 95) : color.new(color.lime, 85),
                  border_style = z.broken ? line.style_dashed : line.style_solid)
             array.push(zoneBoxes, bx)
+
+// -----------------------------------------------------------------------------
+// FIBONACCI VISUAL (Madde 17) — redrawn only on the last bar, same pattern as
+// the zone boxes above. Empty-array guards are not needed here (arrays are
+// cleared then filled unconditionally in the same block), but each level's
+// existence is still checked by f_drawFibLevel via `not na(level)`.
+// -----------------------------------------------------------------------------
+var array<line> fibLines = array.new<line>()
+var array<label> fibLabels = array.new<label>()
+
+if i_showFib and barstate.islast
+    if array.size(fibLines) > 0
+        for i = 0 to array.size(fibLines) - 1
+            line.delete(array.get(fibLines, i))
+    array.clear(fibLines)
+    if array.size(fibLabels) > 0
+        for i = 0 to array.size(fibLabels) - 1
+            label.delete(array.get(fibLabels, i))
+    array.clear(fibLabels)
+
+    if fibValid
+        fibColor = color.new(color.aqua, 30)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib236, "0.236", fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib382, "0.382", fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib500, "0.5",   fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib618, "0.618", fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib786, "0.786", fibColor)
