@@ -3,8 +3,9 @@
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
 // PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones +
-// Fibonacci + Breakout/Retest FSM) — built incrementally, one module at a
-// time, each confirmed working before the next is added (Madde 122).
+// Fibonacci + Breakout/Retest FSM) + PHASE D, part 1 (Price Action) — built
+// incrementally, one module at a time, each confirmed working before the
+// next is added (Madde 122).
 //
 // MODULES INCLUDED SO FAR:
 //   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
@@ -40,10 +41,29 @@
 //   (text_size=tiny everywhere), since it was growing every module and risked
 //   becoming unusable on small screens before the real Madde 114 panel exists.
 //
+//   7. PRICE ACTION ENGINE (Madde 22) — first item of Phase D (Confirmation).
+//      Mathematical, not a pattern zoo: BODY/RANGE, WICK/BODY, CLOSE
+//      LOCATION, RANGE/ATR are the primitives (Madde 22's own instruction),
+//      and only a minimal named-pattern set is derived from them: bullish/
+//      bearish engulfing, hammer/shooting-star shape, upper/lower rejection
+//      wick, inside/outside bar, strong close up/down. "Breakout candle
+//      quality" was intentionally NOT rebuilt as a separate metric — it
+//      would just reuse these same body/wick/range primitives that the
+//      Breakout FSM's displacement check already covers structurally
+//      (Madde 111: don't rebuild redundant concepts). Snapshotted on
+//      confirmed bars only (Madde 33-34), tagged EvidenceFamily.TRIGGER
+//      (Madde 64 lists "rejection", "reclaim", "close confirmation" as
+//      trigger examples — Price Action patterns here are that same kind of
+//      evidence, not a new family). Price Action is explicitly NOT an entry
+//      by itself (Madde 22): no Setup/Trigger/Decision engine consumes it yet.
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
+//   - Momentum refinement and Participation refinement (Madde 121 Phase D) —
+//     the other two Phase D items, separate modules from Price Action.
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation/
-//     volume evidence, Phase D) and HTF_IMPORTANCE (needs MTF, Phase E) are
-//     NOT computed — Zone exposes freshness/touch-count/EMA-confluence only,
+//     volume evidence — Price Action now exists but Participation/volume
+//     still doesn't) and HTF_IMPORTANCE (needs MTF, Phase E) are NOT
+//     computed — Zone exposes freshness/touch-count/EMA-confluence only,
 //     not a fabricated single "quality score". Same restraint applies to the
 //     Breakout FSM's displacement/retest checks (Structure-family only).
 //   - Regime Confidence's "structure agreement" factor (Madde 11) still NOT
@@ -54,7 +74,7 @@
 //     Alert engine (Madde 116-117), Setup/Trigger/Risk/Veto/Decision engines,
 //     WATCH/SETUP/... state transitions (state machine still only reaches
 //     DATA_INVALID/FLAT — Setup Classifier, which would unlock WATCH, does
-//     not exist yet). Phase C is now complete per the Madde 121 roadmap.
+//     not exist yet). Phase C is complete per the Madde 121 roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -75,9 +95,9 @@
 // check before entering the `for`.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM", shorttitle = "BTC-PRO-ABCDEF", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A-D: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM + Price Action", shorttitle = "BTC-PRO-ABCDEFG", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
 
-var string ENGINE_VERSION = "v0.6.0-phaseC-breakout-fsm"
+var string ENGINE_VERSION = "v0.7.0-phaseD-price-action"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -116,11 +136,14 @@ var EngineState currentState = EngineState.DATA_INVALID
 // output can be explicitly tagged with the family it belongs to as it is
 // built, instead of retrofitting the taxonomy later.
 // Producers so far: CONTEXT_REGIME + VOLATILITY (Market Regime), STRUCTURE
-// (also standing in for "Dow" per Madde 61), LOCATION (Zone module AND
-// Fibonacci module both — Madde 4 names the combined hierarchy stage
-// "LOCATION / ZONE"; Madde 17 explicitly calls Fibonacci "location evidence",
-// so it shares the SAME family as Zone rather than getting its own — this
-// matters once family caps (Madde 42) exist, to avoid double counting).
+// (also standing in for "Dow" per Madde 61 — the Breakout FSM uses this same
+// family too, since it only reasons about price vs. a structural level),
+// LOCATION (Zone module AND Fibonacci module both — Madde 4 names the
+// combined hierarchy stage "LOCATION / ZONE"; Madde 17 explicitly calls
+// Fibonacci "location evidence", so it shares the SAME family as Zone rather
+// than getting its own), TRIGGER (Price Action module — Madde 64 lists
+// "rejection"/"reclaim"/"close confirmation" as trigger examples, which is
+// exactly what Price Action's patterns are).
 // -----------------------------------------------------------------------------
 enum EvidenceFamily
     CONTEXT_REGIME
@@ -476,10 +499,21 @@ i_retestMaxBars = input.int(30, "Retest Timeout (bars since confirmed)", minval 
      tooltip = "Retest bu süre içinde sonuçlanmazsa STALE (Madde 20).")
 i_showBreakoutMarks = input.bool(true, "Show Breakout FSM Markers", group = grpBreakout)
 
+// -----------------------------------------------------------------------------
+// INPUTS — PRICE ACTION (Madde 22)
+// -----------------------------------------------------------------------------
+grpPriceAction = "Price Action"
+i_wickBodyMult = input.float(2.0, "Hammer/Star: Long Wick vs Body Multiplier", minval = 0.5, group = grpPriceAction)
+i_smallWickMaxMult = input.float(0.5, "Hammer/Star: Opposite Wick Max (x body)", minval = 0, group = grpPriceAction)
+i_smallBodyMaxRatio = input.float(0.35, "Hammer/Star: Max Body/Range", minval = 0.05, maxval = 1, group = grpPriceAction)
+i_rejectionRangeMult = input.float(0.5, "Rejection: Min Wick (x bar range)", minval = 0.1, maxval = 0.9, group = grpPriceAction)
+i_strongCloseThreshold = input.float(0.7, "Strong Close Threshold (close location)", minval = 0.5, maxval = 1, group = grpPriceAction)
+i_showPriceActionMarks = input.bool(true, "Show Price Action Markers", group = grpPriceAction)
+
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
 i_diagDetail = input.string("FULL", "Diagnostics Detail", options = ["COMPACT", "FULL"], group = grpDebug,
-     tooltip = "COMPACT: yalnızca kritik özet (10 satır, küçük ekranlar için). FULL: tüm modül çıktıları.")
+     tooltip = "COMPACT: yalnızca kritik özet, FULL: tüm modül çıktıları.")
 i_showBg    = input.bool(true, "Highlight DATA_INVALID bars", group = grpDebug)
 
 // -----------------------------------------------------------------------------
@@ -828,6 +862,79 @@ breakoutStateText = f_breakoutStateLabel(breakoutState) + (breakoutDir == Breako
 breakoutLevelText = na(breakoutLevel) ? "N/A" : str.tostring(breakoutLevel)
 
 // -----------------------------------------------------------------------------
+// PRICE ACTION ENGINE (Madde 22) — mathematical primitives first (BODY/RANGE,
+// WICK/BODY, CLOSE LOCATION, RANGE/ATR), then a minimal named-pattern set
+// derived from them. `barRange` reused from the Data Gate section above (no
+// duplicate calculation, Madde 111). Computed live every bar but only
+// SNAPSHOTTED into the displayed var strings on confirmed bars (Madde 33-34),
+// same pattern as Structure's lastHighLabel/lastLowLabel.
+// -----------------------------------------------------------------------------
+paBodySize  = math.abs(close - open)
+paBodyHigh  = math.max(open, close)
+paBodyLow   = math.min(open, close)
+paUpperWick = high - paBodyHigh
+paLowerWick = paBodyLow - low
+
+paBodyToRange   = barRange > 0 ? paBodySize / barRange : na
+paCloseLocation = barRange > 0 ? (close - low) / barRange : na   // 0 = closed at low, 1 = closed at high
+paRangeToAtr    = atrValid ? barRange / atrValue : na
+
+paBullEngulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+paBearEngulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+paHammerShape = not na(paBodyToRange) and paLowerWick >= i_wickBodyMult * paBodySize and
+     paUpperWick <= paBodySize * i_smallWickMaxMult and paBodyToRange <= i_smallBodyMaxRatio
+paStarShape = not na(paBodyToRange) and paUpperWick >= i_wickBodyMult * paBodySize and
+     paLowerWick <= paBodySize * i_smallWickMaxMult and paBodyToRange <= i_smallBodyMaxRatio
+
+paUpperRejection = barRange > 0 and paUpperWick >= i_rejectionRangeMult * barRange
+paLowerRejection = barRange > 0 and paLowerWick >= i_rejectionRangeMult * barRange
+
+paInsideBar  = high <= high[1] and low >= low[1]
+paOutsideBar = high >= high[1] and low <= low[1]
+
+paStrongCloseUp   = not na(paCloseLocation) and paCloseLocation >= i_strongCloseThreshold
+paStrongCloseDown = not na(paCloseLocation) and paCloseLocation <= (1 - i_strongCloseThreshold)
+
+var string lastPriceActionPatterns = "NONE"
+var int    lastPriceActionBar      = na
+var float  lastBodyToRange         = na
+var float  lastCloseLocation       = na
+var float  lastRangeToAtr          = na
+
+if barstate.isconfirmed
+    paPatterns = array.new<string>()
+    if paBullEngulf
+        array.push(paPatterns, "BULL ENGULF")
+    if paBearEngulf
+        array.push(paPatterns, "BEAR ENGULF")
+    if paHammerShape
+        array.push(paPatterns, "HAMMER")
+    if paStarShape
+        array.push(paPatterns, "SHOOTING STAR")
+    if paUpperRejection
+        array.push(paPatterns, "UPPER REJECTION")
+    if paLowerRejection
+        array.push(paPatterns, "LOWER REJECTION")
+    if paInsideBar
+        array.push(paPatterns, "INSIDE BAR")
+    if paOutsideBar
+        array.push(paPatterns, "OUTSIDE BAR")
+    if paStrongCloseUp
+        array.push(paPatterns, "STRONG CLOSE UP")
+    if paStrongCloseDown
+        array.push(paPatterns, "STRONG CLOSE DOWN")
+    lastPriceActionPatterns := array.size(paPatterns) > 0 ? array.join(paPatterns, ", ") : "NONE"
+    lastPriceActionBar := bar_index
+    lastBodyToRange := paBodyToRange
+    lastCloseLocation := paCloseLocation
+    lastRangeToAtr := paRangeToAtr
+
+priceActionMetricsText = (na(lastBodyToRange) ? "N/A" : "body/range " + str.tostring(lastBodyToRange, "#.##")) +
+     "  close@" + (na(lastCloseLocation) ? "N/A" : str.tostring(lastCloseLocation, "#.##")) +
+     "  range/ATR " + (na(lastRangeToAtr) ? "N/A" : str.tostring(lastRangeToAtr, "#.##"))
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -855,7 +962,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 10 : 28, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 11 : 30, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -892,8 +999,11 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     table.cell(debugTable, 0, 8, "NEAREST SUPPORT", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 8, supZoneText, text_size = size.tiny, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 9, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 9, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 9, "PRICE ACTION", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 9, lastPriceActionPatterns, text_size = size.tiny, text_color = lastPriceActionPatterns == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 10, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 10, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -995,8 +1105,14 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 26, "FIB TOUCH", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 26, fibTouchLabel, text_size = size.tiny, text_color = fibTouchLabel == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 27, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 27, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 27, "PRICE ACTION", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 27, lastPriceActionPatterns, text_size = size.tiny, text_color = lastPriceActionPatterns == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 28, "CANDLE METRICS", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 28, priceActionMetricsText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 29, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 29, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -1036,6 +1152,13 @@ if i_showBreakoutMarks and barstate.isconfirmed and breakoutStateBar == bar_inde
     label.new(bar_index, breakoutDir == BreakoutDirection.UP ? high : low, f_breakoutStateLabel(breakoutState),
          style = breakoutDir == BreakoutDirection.UP ? label.style_label_down : label.style_label_up,
          color = color.new(breakoutMarkColor, 0), textcolor = color.white, size = size.tiny)
+
+// Price Action (Madde 22): small dots on the confirmed bar, bullish patterns
+// below the bar, bearish above — diagnostic only, not a trigger/entry.
+plotshape(i_showPriceActionMarks and barstate.isconfirmed and (paBullEngulf or paHammerShape),
+     title = "Bullish Price Action", style = shape.circle, location = location.belowbar, color = color.lime, size = size.tiny)
+plotshape(i_showPriceActionMarks and barstate.isconfirmed and (paBearEngulf or paStarShape),
+     title = "Bearish Price Action", style = shape.circle, location = location.abovebar, color = color.red, size = size.tiny)
 
 var array<box> zoneBoxes = array.new<box>()
 
