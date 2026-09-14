@@ -181,10 +181,41 @@
 //      not breakout continuation). This FINALLY wires the state machine
 //      beyond DATA_INVALID/FLAT: FLAT -> WATCH (BREAKOUT_CANDIDATE) -> SETUP
 //      (CONFIRMED_BREAKOUT) -> ENTRY_PENDING (RETEST_PENDING or ENTRY),
-//      always gated by eligibility, and always capped at ENTRY_PENDING —
-//      CONFIRMED_LONG/CONFIRMED_SHORT require the Veto Engine (Madde 52-53)
-//      and Final Decision Engine (Madde 37), neither built yet, so advancing
-//      further would be a fabricated "confirmed" decision (Madde 139/140).
+//      always gated by eligibility. At this point (v0.12.x) it was still
+//      capped at ENTRY_PENDING pending the Veto Engine — see module 13.
+//
+//  13. VETO ENGINE (Madde 52-53) — per user decision, built next instead of
+//      the remaining 4 setup archetypes, so the ALREADY-BUILT chain
+//      (Regime -> Structure -> Zone -> Breakout FSM -> Setup Classifier ->
+//      Risk Engine) could reach a real CONFIRMED_LONG/CONFIRMED_SHORT for
+//      the first time, end-to-end, before breadth is added (the remaining
+//      archetypes would otherwise stay stuck at ENTRY_PENDING just like
+//      Risk Engine sat unused before the Setup Classifier existed). Runs
+//      independently of score (Madde 52 — trivial, no scoring engine
+//      exists). Implements only the HARD VETO / SOFT PENALTY categories
+//      this script has real evidence for (Madde 139/140 — no fabricated
+//      EXECUTION INVALID / LEVERAGE CASCADE / ACCOUNT CIRCUIT BREAKER /
+//      position-exposure checks, none of which exist yet), in Madde 53's
+//      precedence order: RISK INVALID (the live setup's Risk Engine status
+//      != OK — reuses f_riskCalc, Madde 111), STRUCTURE INVALID (severe
+//      MTF conflict, mtfAgreement == CONFLICT), SETUP INVALID (not
+//      eligible or FSM failed/idle). SOFT PENALTIES (weak participation,
+//      weak momentum, MTF NEUTRAL, low regime confidence, elevated
+//      volatility) are informational only, never block CONFIRMED. Per
+//      explicit user instruction: no new magic-number threshold is
+//      hardcoded — R:R is already i_minRR (Risk Engine's own input), and
+//      the one new threshold this module adds (the ENTRY_PENDING
+//      veto-blocked timeout, Madde 55 v3.1.1 EK, previously an explicitly
+//      open question) is i_entryPendingMaxBars, a real input. A
+//      hard-vetoed setup is NEVER silently hidden — it stays visible at
+//      ENTRY_PENDING with the reason in the VETO row until the timeout
+//      expires (then reverts to FLAT, same as a failed/stale breakout).
+//      currentState can only ever hold one value, so CONFIRMED_LONG and
+//      CONFIRMED_SHORT structurally cannot coexist on the same bar (Madde
+//      51 v3.1.1 EK invariant, satisfied by construction, not by an
+//      explicit check). This is Phase F's most consequential module so
+//      far: the engine can now, for the very first time, reach a real
+//      CONFIRMED_LONG/CONFIRMED_SHORT rather than capping at ENTRY_PENDING.
 //
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
@@ -205,16 +236,29 @@
 //   - Compact panel (Madde 114), Alert engine (Madde 116-117). Four of the
 //     five Setup Classifier archetypes (PULLBACK CONTINUATION, RANGE
 //     REJECTION, FAILED BREAKOUT REVERSAL, MEAN REVERSION — only BREAKOUT
-//     RETEST is detected so far). Trigger engine (distinct from the Setup
-//     Classifier's own trigger concept — Madde 64's broader trigger
-//     taxonomy), Veto Engine (Madde 52-53), Final Decision Engine (Madde
-//     37) — CONFIRMED_LONG/CONFIRMED_SHORT/IN_POSITION/EXIT/COOLDOWN still
-//     do not exist because of this. Position sizing beyond the Risk
-//     Engine's own diagnostic numbers (Madde 48's spot/perpetual/MAX
-//     EXPOSURE nuances, Madde 88 backtest-time sizing) is out of scope
-//     until real setups exist to test it against. Phase C, D, AND E are
+//     RETEST is detected so far; per user decision, deliberately deferred
+//     until the Veto Engine existed so they can all be integrated against
+//     it in one pass instead of piecemeal). Trigger engine (distinct from
+//     the Setup Classifier's own trigger concept — Madde 64's broader
+//     trigger taxonomy). Final Decision Engine (Madde 37) — the Veto
+//     Engine now gates CONFIRMED_LONG/CONFIRMED_SHORT directly, but a
+//     dedicated scoring/aggregation Decision Engine layer on top of it
+//     does not exist yet. IN_POSITION/EXIT/COOLDOWN (Madde 55-56 Position
+//     Lifecycle) still do not exist — need the Execution Engine, Phase G.
+//     Position sizing beyond the Risk Engine's own diagnostic numbers
+//     (Madde 48's spot/perpetual/MAX EXPOSURE nuances, Madde 88
+//     backtest-time sizing) is out of scope until real positions exist to
+//     test it against. Some Madde 52 hard-veto/soft-penalty candidates are
+//     NOT checked because no data source exists for them yet: EXECUTION
+//     INVALID, LEVERAGE CASCADE RISK (EK-A), ACCOUNT CIRCUIT BREAKER
+//     (EK-C), position/exposure violation, unsupported timeframe (Madde
+//     32), "late entry" (no defined threshold), repaint-sensitive final
+//     signal (N/A — nothing here repaints), critical calculation
+//     unavailable (already covered by Risk Engine's own NO STRUCTURAL
+//     STOP/NO TARGET ZONE statuses, not duplicated). Phase C, D, AND E are
 //     complete; Phase F is in progress (Risk Engine + Setup Classifier's
-//     first archetype done) per the Madde 121 roadmap.
+//     first archetype + Veto Engine done — the engine can now reach a
+//     real CONFIRMED_LONG/CONFIRMED_SHORT) per the Madde 121 roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -292,7 +336,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.12.1-setup-state-consistency-fix"
+var string ENGINE_VERSION = "v0.13.0-phaseF-veto-engine"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -322,6 +366,16 @@ f_stateLabel(EngineState s) =>
         EngineState.EXIT           => "EXIT"
         EngineState.COOLDOWN       => "COOLDOWN"
         =>                             "UNKNOWN"
+
+// STATE row coloring (diagnostics table): DATA_INVALID=red,
+// CONFIRMED_LONG=lime, CONFIRMED_SHORT=red, FLAT=gray, everything else
+// (WATCH/SETUP/ENTRY_PENDING — "something is in progress") = yellow.
+f_stateColor(EngineState s) =>
+    s == EngineState.DATA_INVALID    ? color.red :
+     s == EngineState.CONFIRMED_LONG  ? color.lime :
+     s == EngineState.CONFIRMED_SHORT ? color.red :
+     s == EngineState.FLAT            ? color.gray :
+     color.yellow
 
 var EngineState currentState = EngineState.DATA_INVALID
 
@@ -954,6 +1008,13 @@ i_riskPctPerTrade = input.float(1.0, "Risk % per Trade", minval = 0.01, maxval =
      tooltip = "Madde 48: Risk Amount = Equity x Risk%.")
 i_leverage = input.float(1.0, "Leverage (1.0 = spot / no leverage)", minval = 1.0, group = grpRisk,
      tooltip = "Madde 48 — leverage açıkça belirtilmeden varsayılmaz; varsayılan 1.0 (spot, kaldıraçsız).")
+
+// -----------------------------------------------------------------------------
+// INPUTS — VETO ENGINE (Madde 52-53)
+// -----------------------------------------------------------------------------
+grpVeto = "Veto Engine — hard vetoes block CONFIRMED, never hidden"
+i_entryPendingMaxBars = input.int(20, "ENTRY_PENDING Veto-Blocked Timeout (bars)", minval = 1, group = grpVeto,
+     tooltip = "Madde 55 v3.1.1 EK — breakoutState ENTRY'ye ulaştığı ama hard veto yüzünden CONFIRMED'e geçemediği durumda, bu bar sayısından sonra FLAT'e döner (o zamana kadar ENTRY_PENDING'de görünür kalır).")
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -1634,22 +1695,111 @@ setupRiskText = setupType != SetupType.BREAKOUT_RETEST ? "N/A" :
      breakoutDir == BreakoutDirection.UP ? riskLongText : riskShortText
 
 // -----------------------------------------------------------------------------
-// STATE MACHINE — WATCH/SETUP/ENTRY_PENDING (Madde 18-19, 55). Second
-// confirmed-bar block (the first, above, only owns the DATA_INVALID gate —
-// see its comment) since it needs breakoutState/setupEligible, computed
-// later in the script than that block. Deliberately capped at
-// ENTRY_PENDING: CONFIRMED_LONG/CONFIRMED_SHORT need the Veto Engine
-// (Madde 52-53) and Final Decision Engine (Madde 37), neither built yet —
-// advancing further here would be a fabricated "confirmed" decision with no
-// veto behind it (Madde 139/140).
+// VETO ENGINE (Madde 52-53) — Phase F, the piece that finally lets the chain
+// (Regime -> Structure -> Zone -> Breakout FSM -> Setup Classifier -> Risk
+// Engine) reach a real CONFIRMED_LONG/CONFIRMED_SHORT. Runs INDEPENDENTLY
+// of score (Madde 52 — no scoring engine exists anyway, so this is
+// trivially satisfied). Only the HARD VETO / SOFT PENALTY categories this
+// script has actual evidence for are implemented (Madde 139/140 — no
+// fabricated checks for EXECUTION INVALID, LEVERAGE CASCADE RISK, ACCOUNT
+// CIRCUIT BREAKER, position/exposure violation, etc., none of which exist
+// yet), evaluated in Madde 53's PRECEDENCE order:
+//   RISK INVALID      = the live setup's Risk Engine status != OK (Madde
+//                        111 — reuses f_riskCalc's status, already covers
+//                        Madde 52's "poor R:R", stop/target problems,
+//                        "entry too close"/already-invalidated cases).
+//   STRUCTURE INVALID = severe MTF conflict (mtfAgreement == CONFLICT,
+//                        Madde 52's explicit "severe MTF conflict" item).
+//   SETUP INVALID     = Setup Classifier says not eligible, or the
+//                        Breakout FSM already failed/is idle (Madde 19,
+//                        Madde 52's "failed setup").
+// SOFT PENALTIES (Madde 52) are informational only, never block CONFIRMED:
+// weak participation, weak momentum, MTF NEUTRAL (as opposed to the hard
+// CONFLICT), low regime confidence, elevated volatility.
+//
+// Per explicit user instruction: no NEW magic-number threshold is
+// hardcoded here — R:R is already i_minRR (Risk Engine's own input), and
+// the one new threshold this module introduces (the ENTRY_PENDING
+// veto-blocked timeout, Madde 55 v3.1.1 EK) is i_entryPendingMaxBars
+// below. A hard-vetoed setup is NEVER silently hidden: it stays visible at
+// its current WATCH/SETUP/ENTRY_PENDING state with the reason shown in the
+// VETO diagnostics row, only falling back to FLAT if fully expired.
 // -----------------------------------------------------------------------------
+liveRiskStatus = breakoutDir == BreakoutDirection.UP ? longStatus : shortStatus
+riskInvalid = setupType == SetupType.BREAKOUT_RETEST and liveRiskStatus != "OK"
+structureInvalid = setupType == SetupType.BREAKOUT_RETEST and mtfAgreement == MtfAgreement.CONFLICT
+setupInvalid = setupType != SetupType.BREAKOUT_RETEST
+
+hardVetoReasons = array.new<string>()
+if riskInvalid
+    array.push(hardVetoReasons, "RISK INVALID (" + liveRiskStatus + ")")
+if structureInvalid
+    array.push(hardVetoReasons, "STRUCTURE INVALID (severe MTF conflict)")
+if setupInvalid
+    array.push(hardVetoReasons, "SETUP INVALID (" + (not setupEligible ? "not eligible" : "no active setup") + ")")
+hardVetoActive = array.size(hardVetoReasons) > 0
+
+softPenalties = array.new<string>()
+if lastParticipationState == ParticipationState.CONTRACTING
+    array.push(softPenalties, "weak participation")
+if lastMomentumState == MomentumState.WEAKENING or lastMomentumState == MomentumState.NEUTRAL
+    array.push(softPenalties, "weak momentum")
+if mtfAgreement == MtfAgreement.NEUTRAL
+    array.push(softPenalties, "MTF unclear")
+if regimeConfidence == ConfidenceLevel.LOW
+    array.push(softPenalties, "low regime confidence")
+if volRegime == VolRegime.HIGH_VOL or volRegime == VolRegime.EXTREME_VOL
+    array.push(softPenalties, "elevated volatility")
+
+softPenaltyText = array.size(softPenalties) > 0 ? array.join(softPenalties, ", ") : "none"
+hardVetoText = array.size(hardVetoReasons) > 0 ? array.join(hardVetoReasons, "; ") : "none"
+// Full text collapses to a plain "N/A" while nothing is even attempting a
+// setup — showing "HARD VETO: SETUP INVALID" through every idle FLAT bar
+// would be technically true but pure noise (Madde 10).
+vetoText = breakoutDir == BreakoutDirection.NONE ? "N/A (no active setup)" :
+     hardVetoActive ? "HARD VETO: " + hardVetoText + (array.size(softPenalties) > 0 ? "  [soft: " + softPenaltyText + "]" : "") :
+     array.size(softPenalties) > 0 ? "no hard veto  [soft: " + softPenaltyText + "]" :
+     "CLEAN"
+
+// -----------------------------------------------------------------------------
+// STATE MACHINE — WATCH/SETUP/ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT
+// (Madde 18-19, 52-53, 55). Second confirmed-bar block (the first, above,
+// only owns the DATA_INVALID gate — see its comment) since it needs
+// breakoutState/setupEligible/hardVetoActive, all computed later in the
+// script than that block. A structural ENTRY (retest accepted) becomes a
+// real CONFIRMED_LONG/CONFIRMED_SHORT only when the Veto Engine has NO hard
+// veto — this is the first module where that transition can happen at all.
+// If hard-vetoed, state stays at ENTRY_PENDING (never silently hidden, see
+// VETO row) until i_entryPendingMaxBars bars pass, then reverts to FLAT
+// (Madde 55 v3.1.1 EK's previously-open question: WATCH or FLAT — FLAT
+// chosen for consistency with how FAILED_BREAKOUT/REVERSAL_CANDIDATE/STALE
+// already all resolve to FLAT, Madde 10 simplicity). The single
+// currentState variable can only ever hold ONE value, so CONFIRMED_LONG
+// and CONFIRMED_SHORT can structurally never coexist on the same bar
+// (Madde 51 v3.1.1 EK invariant, satisfied by construction).
+// -----------------------------------------------------------------------------
+var int entryPendingBlockedBars = 0
+bool newlyConfirmed = false
+
 if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
-    currentState := not setupEligible ? EngineState.FLAT :
+    provisionalState = not setupEligible ? EngineState.FLAT :
          breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE ? EngineState.WATCH :
          breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT ? EngineState.SETUP :
          breakoutState == BreakoutFSMState.RETEST_PENDING ? EngineState.ENTRY_PENDING :
          breakoutState == BreakoutFSMState.ENTRY ? EngineState.ENTRY_PENDING :
          EngineState.FLAT
+
+    if provisionalState == EngineState.ENTRY_PENDING and breakoutState == BreakoutFSMState.ENTRY and not hardVetoActive
+        wasAlreadyConfirmed = currentState == EngineState.CONFIRMED_LONG or currentState == EngineState.CONFIRMED_SHORT
+        currentState := breakoutDir == BreakoutDirection.UP ? EngineState.CONFIRMED_LONG : EngineState.CONFIRMED_SHORT
+        newlyConfirmed := not wasAlreadyConfirmed
+        entryPendingBlockedBars := 0
+    else if provisionalState == EngineState.ENTRY_PENDING and breakoutState == BreakoutFSMState.ENTRY and hardVetoActive
+        entryPendingBlockedBars := entryPendingBlockedBars + 1
+        currentState := entryPendingBlockedBars > i_entryPendingMaxBars ? EngineState.FLAT : EngineState.ENTRY_PENDING
+    else
+        entryPendingBlockedBars := 0
+        currentState := provisionalState
 
 // -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
@@ -1679,7 +1829,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 19 : 42, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 20 : 44, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -1689,7 +1839,7 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     table.cell(debugTable, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
 
     table.cell(debugTable, 0, 1, "STATE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = currentState == EngineState.DATA_INVALID ? color.red : color.lime, text_halign = text.align_left)
+    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = f_stateColor(currentState), text_halign = text.align_left)
 
     table.cell(debugTable, 0, 2, "DATA GATE", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_size = size.tiny, text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
@@ -1750,15 +1900,18 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     table.cell(debugTable, 0, 17, "SETUP", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 17, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 18, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 18, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 18, "VETO", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 18, vetoText, text_size = size.tiny, text_color = hardVetoActive ? color.red : array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 19, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 19, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
     table.cell(debugTable, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
 
     table.cell(debugTable, 0, 1, "STATE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = currentState == EngineState.DATA_INVALID ? color.red : color.lime, text_halign = text.align_left)
+    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = f_stateColor(currentState), text_halign = text.align_left)
 
     table.cell(debugTable, 0, 2, "DATA GATE (live)", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_size = size.tiny, text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
@@ -1903,8 +2056,14 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 40, "SETUP RISK", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 40, setupRiskText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 41, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 41, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 41, "VETO (HARD)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 41, hardVetoActive ? hardVetoText : (breakoutDir == BreakoutDirection.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = hardVetoActive ? color.red : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 42, "VETO (SOFT)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 42, array.size(softPenalties) > 0 ? softPenaltyText : (breakoutDir == BreakoutDirection.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 43, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 43, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -1944,6 +2103,18 @@ if i_showBreakoutMarks and barstate.isconfirmed and breakoutStateBar == bar_inde
     label.new(bar_index, breakoutDir == BreakoutDirection.UP ? high : low, f_breakoutStateLabel(breakoutState),
          style = breakoutDir == BreakoutDirection.UP ? label.style_label_down : label.style_label_up,
          color = color.new(breakoutMarkColor, 0), textcolor = color.white, size = size.tiny)
+
+// Veto Engine (Madde 52-53): a distinct, larger marker ONLY on the bar a
+// CONFIRMED_LONG/CONFIRMED_SHORT is first reached (newlyConfirmed, edge-
+// triggered — not redrawn every bar it persists), separate from the
+// Breakout FSM's own "ENTRY (structural only)" label above since this one
+// means the Veto Engine found no hard veto, a materially different claim.
+if i_showBreakoutMarks and barstate.isconfirmed and newlyConfirmed
+    label.new(bar_index, currentState == EngineState.CONFIRMED_LONG ? low : high,
+         "CONFIRMED " + (currentState == EngineState.CONFIRMED_LONG ? "LONG" : "SHORT"),
+         style = currentState == EngineState.CONFIRMED_LONG ? label.style_label_up : label.style_label_down,
+         color = color.new(currentState == EngineState.CONFIRMED_LONG ? color.lime : color.red, 0),
+         textcolor = color.white, size = size.small)
 
 // Price Action (Madde 22): small dots on the confirmed bar, bullish patterns
 // below the bar, bearish above — diagnostic only, not a trigger/entry.
