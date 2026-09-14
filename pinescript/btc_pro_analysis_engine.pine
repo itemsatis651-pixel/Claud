@@ -90,23 +90,59 @@
 //      Location/Zone Quality (Madde 62-63) or the Setup Classifier is built,
 //      where its actual effect can be measured (Madde 111).
 //
+//  10. MTF REFINEMENT (Madde 28-32) — first item of Phase E (Context).
+//      Relative Strength (Madde 27's OTHER Phase E item) is deliberately NOT
+//      built this turn (Madde 122: one module per turn) — it is explicitly
+//      "not mandatory for a BTC-only system" per Madde 27, and needs a user
+//      decision on which benchmark to use, so it is deferred to its own
+//      turn. This module requests exactly ONE higher timeframe (HTF), chosen
+//      via a simple, explainable chart-TF -> HTF map (Madde 28's default
+//      role table, collapsed to "one level up" from the current chart:
+//      <=15m->1H, <=1H->4H, <=4H->1D, >=1D->N/A, no higher default role) or
+//      a MANUAL override input; if the manual HTF is not actually higher
+//      than the chart TF, MTF is reported UNAVAILABLE rather than showing
+//      fabricated data (Madde 139/140). Exactly ONE request.security() call
+//      is used, bundling THREE values as a single tuple (HTF close, HTF EMA,
+//      HTF EMA N-bars-earlier for slope) — Madde 110's "prefer one tuple
+//      request over several separate calls" — so this module costs exactly
+//      ONE request.*() slot (0/40 -> 1/40, see REQUEST BUDGET diagnostics
+//      row). Non-repainting per Madde 29: EVERY value inside the tuple is
+//      offset with `[1]` (the slope value with `[lookback+1]`) AND the call
+//      uses `lookahead = barmerge.lookahead_on` — the official TradingView
+//      non-repainting HTF pattern (confirmed HTF bar data only, one HTF bar
+//      of lag accepted on purpose). Bare `lookahead_on` without offsetting
+//      the expression is explicitly forbidden by Madde 29 and is NOT used
+//      anywhere in this script. Produces an HTF_BIAS (BULLISH/BEARISH/
+//      NEUTRAL, from simple HTF close-vs-EMA + EMA-slope agreement, Madde 10
+//      — no re-derivation of the full Regime/Structure engines on the HTF,
+//      which would be fragile/expensive to evaluate via request.security)
+//      and an MTF_AGREEMENT versus the chart's OWN structureBias (AGREE/
+//      CONFLICT/NEUTRAL/UNAVAILABLE). Tagged EvidenceFamily.MTF. Per Madde
+//      31, MTF agreement/conflict here is CONTEXT ONLY — it does NOT
+//      produce any automatic LONG/SHORT, and no timeframe gets its own
+//      independent score (no scoring engine exists yet regardless).
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
 //     evidence — both now exist, but no scoring engine combines them yet,
-//     Madde 41) and HTF_IMPORTANCE (needs MTF, Phase E) are NOT computed —
-//     Zone exposes freshness/touch-count/EMA-confluence only, not a
-//     fabricated single "quality score". Same restraint applies to the
-//     Breakout FSM's displacement/retest checks (Structure-family only).
+//     Madde 41) and HTF_IMPORTANCE (needs the full MTF cascade, not just the
+//     single-HTF module built this turn) are NOT computed — Zone exposes
+//     freshness/touch-count/EMA-confluence only, not a fabricated single
+//     "quality score". Same restraint applies to the Breakout FSM's
+//     displacement/retest checks (Structure-family only).
 //   - Regime Confidence's "structure agreement" factor (Madde 11) still NOT
 //     wired up, same as before — deferred to its own reviewable step.
 //   - Full Evidence Family aggregation / family caps (Madde 42) — deferred
 //     until scoring/normalization (Madde 41) exists.
-//   - MTF (request budget still 0/40, Madde 110), Compact panel (Madde 114),
-//     Alert engine (Madde 116-117), Setup/Trigger/Risk/Veto/Decision engines,
-//     WATCH/SETUP/... state transitions (state machine still only reaches
-//     DATA_INVALID/FLAT — Setup Classifier, which would unlock WATCH, does
-//     not exist yet). Phase C AND Phase D are now complete per the Madde 121
-//     roadmap.
+//   - Relative Strength (Madde 27, Phase E's other item — needs a benchmark
+//     decision from the user first), full multi-level MTF cascade (only ONE
+//     HTF level is requested so far, not the full 1D/4H/1H/15m stack),
+//     Compact panel (Madde 114), Alert engine (Madde 116-117), Setup/
+//     Trigger/Risk/Veto/Decision engines, WATCH/SETUP/... state transitions
+//     (state machine still only reaches DATA_INVALID/FLAT — Setup
+//     Classifier, which would unlock WATCH, does not exist yet). Phase C
+//     AND Phase D are complete; Phase E is in progress (MTF refinement done,
+//     Relative Strength pending) per the Madde 121 roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -156,7 +192,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.9.2-replay-buffer-fix"
+var string ENGINE_VERSION = "v0.10.0-phaseE-mtf-refinement"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -421,6 +457,25 @@ f_partDirLabel(ParticipationDirection d) =>
         =>                                 "NONE"
 
 // -----------------------------------------------------------------------------
+// MTF ENUMS (Madde 28-32) — HTF bias reuses StructureBias (same three values,
+// same meaning: BULLISH/BEARISH/NEUTRAL direction read), not a duplicate
+// near-identical enum (Madde 111). MtfAgreement is the NEW concept: how the
+// HTF bias relates to the chart's own structureBias.
+// -----------------------------------------------------------------------------
+enum MtfAgreement
+    UNAVAILABLE
+    AGREE
+    CONFLICT
+    NEUTRAL
+
+f_mtfAgreementLabel(MtfAgreement a) =>
+    switch a
+        MtfAgreement.AGREE    => "AGREE"
+        MtfAgreement.CONFLICT => "CONFLICT"
+        MtfAgreement.NEUTRAL  => "NEUTRAL"
+        =>                         "UNAVAILABLE"
+
+// -----------------------------------------------------------------------------
 // SUPPORT/RESISTANCE ZONE TYPE + HELPERS (Madde 15, 16) — built ONLY on top of
 // the central confirmed-swing function; no separate pivot logic here. All
 // helpers take their thresholds as explicit parameters (never read inputs or
@@ -666,6 +721,16 @@ i_obvSlopeLookback = input.int(3, "OBV Slope Lookback (bars)", minval = 1, group
 i_vwapLookback = input.int(20, "Rolling VWAP Lookback (bars)", minval = 1, group = grpParticipation,
      tooltip = "N-bar rolling volume-weighted average, NOT session-anchored — Madde 24: BTC 24/7, session-open kavramı yok.")
 i_showParticipationMarks = input.bool(true, "Show Participation Markers / VWAP", group = grpParticipation)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MTF REFINEMENT (Madde 28-32)
+// -----------------------------------------------------------------------------
+grpMtf = "MTF Refinement"
+i_mtfMode = input.string("AUTO", "HTF Selection", options = ["AUTO", "MANUAL"], group = grpMtf,
+     tooltip = "AUTO: Madde 28 varsayılan rollerinin basitleştirilmiş hali (chart <=15m->1H, <=1H->4H, <=4H->1D, >=1D->N/A). MANUAL: aşağıdaki HTF'i kullan.")
+i_mtfManualTf = input.timeframe("240", "Manual HTF (only used if AUTO is off)", group = grpMtf)
+i_mtfEmaLen = input.int(50, "HTF Trend EMA Length", minval = 1, group = grpMtf)
+i_mtfSlopeLookback = input.int(5, "HTF EMA Slope Lookback (HTF bars)", minval = 1, group = grpMtf)
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -1218,6 +1283,52 @@ participationText = f_partStateLabel(lastParticipationState) + (lastParticipatio
 vwapText = na(lastVwap) ? "N/A" : str.tostring(lastVwap) + (lastPriceAboveVwap ? " (price above)" : " (price below)")
 
 // -----------------------------------------------------------------------------
+// MTF REFINEMENT (Madde 28-32) — first item of Phase E. Exactly ONE HTF,
+// exactly ONE request.security() call (1/40 budget). HTF resolution is built
+// entirely from `input.*` values and `timeframe.in_seconds(timeframe.period)`
+// (all "simple", never "series" qualified), so the resulting timeframe string
+// stays valid as request.security()'s (simple-string-only) second argument
+// even though it depends on a ternary chain.
+// -----------------------------------------------------------------------------
+chartTfSeconds = timeframe.in_seconds(timeframe.period)
+manualTfSeconds = timeframe.in_seconds(i_mtfManualTf)
+
+// "One level up" from Madde 28's default role table, collapsed to a single
+// HTF (the full 1D/4H/1H/15m cascade is deferred, see header note). Falls
+// back to the chart's own timeframe.period when no higher default role
+// exists — a always-valid, non-empty string to hand to request.security();
+// mtfAvailable (below) is what actually gates whether this is trusted/shown,
+// so no fabricated data reaches the diagnostics table (Madde 139/140).
+autoHtf = chartTfSeconds <= 900 ? "60" : chartTfSeconds <= 3600 ? "240" : chartTfSeconds <= 14400 ? "1D" : timeframe.period
+autoHtfAvailable = chartTfSeconds <= 14400
+
+mtfResolvedTf = i_mtfMode == "MANUAL" ? i_mtfManualTf : autoHtf
+mtfAvailable = chartTypeOK and (i_mtfMode == "MANUAL" ? manualTfSeconds > chartTfSeconds : autoHtfAvailable)
+
+// Non-repainting HTF access (Madde 29): every value in the tuple is offset by
+// `[1]` (the slope reference by `[i_mtfSlopeLookback + 1]`) AND the call uses
+// `lookahead = barmerge.lookahead_on` together — the official TradingView
+// non-repainting pattern. Bare `lookahead_on` without an offset expression is
+// forbidden by Madde 29 and is never used. One HTF bar of lag is accepted on
+// purpose (Madde 29: no future leak for an earlier signal).
+[htfClose, htfEma, htfEmaSlopeRef] = request.security(syminfo.tickerid, mtfResolvedTf,
+     [close[1], ta.ema(close, i_mtfEmaLen)[1], ta.ema(close, i_mtfEmaLen)[i_mtfSlopeLookback + 1]],
+     lookahead = barmerge.lookahead_on)
+
+htfBiasRaw = htfClose > htfEma and htfEma > htfEmaSlopeRef ? StructureBias.BULLISH :
+     htfClose < htfEma and htfEma < htfEmaSlopeRef ? StructureBias.BEARISH :
+     StructureBias.NEUTRAL
+
+mtfAgreement = not mtfAvailable ? MtfAgreement.UNAVAILABLE :
+     htfBiasRaw == StructureBias.NEUTRAL or structureBias == StructureBias.NEUTRAL ? MtfAgreement.NEUTRAL :
+     htfBiasRaw == structureBias ? MtfAgreement.AGREE :
+     MtfAgreement.CONFLICT
+
+mtfHtfText = mtfAvailable ? mtfResolvedTf + (i_mtfMode == "MANUAL" ? " (manual)" : " (auto)") :
+     "N/A" + (i_mtfMode == "MANUAL" ? " (manual HTF <= chart TF)" : " (chart already >= 1D)")
+mtfBiasText = mtfAvailable ? f_biasLabel(htfBiasRaw) + " vs chart " + f_biasLabel(structureBias) : "N/A"
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -1245,7 +1356,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 13 : 34, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 15 : 36, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -1296,8 +1407,16 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
          text_color = lastParticipationState == ParticipationState.CONFIRMING ? color.lime : lastParticipationState == ParticipationState.DIVERGING ? color.orange : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 12, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 12, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 12, "MTF HTF", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 12, mtfHtfText, text_size = size.tiny, text_color = mtfAvailable ? color.gray : color.silver, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 13, "MTF AGREEMENT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 13, f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""), text_size = size.tiny,
+         text_color = mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 14, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 14, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -1423,8 +1542,16 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 32, "VWAP (rolling)", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 32, vwapText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 33, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 33, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 33, "MTF HTF", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 33, mtfHtfText, text_size = size.tiny, text_color = mtfAvailable ? color.gray : color.silver, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 34, "MTF AGREEMENT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 34, f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""), text_size = size.tiny,
+         text_color = mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 35, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 35, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
