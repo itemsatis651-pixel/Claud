@@ -2,37 +2,41 @@
 
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
-// PHASE A — PART 1: DATA GATE + SYMBOL/DATA VALIDATION + STATE MACHINE SKELETON
+// PHASE A (Data Gate) + PHASE B (Market Regime) — built incrementally, one
+// module at a time, each confirmed working before the next is added (Madde 122).
 //
-// Scope of THIS file (per master prompt Madde 121 Phase A, first slice):
-//   - Data Gate (Madde 7): OHLC / volume / history / ATR / gap / abnormal bar /
-//     stale-feed checks. NA is never treated as 0 or as bullish/bearish evidence.
-//   - Symbol & data source validation (Madde 1, 8): exchange/base/quote check,
-//     spot-vs-perpetual is only ever reported as a best-effort guess, never
-//     assumed silently (Madde 139/140).
-//   - State machine SKELETON (Madde 55): the full internal state enum exists,
-//     but only DATA_INVALID <-> FLAT transitions are implemented. WATCH / SETUP /
-//     ENTRY_PENDING / CONFIRMED_LONG / CONFIRMED_SHORT / IN_POSITION / EXIT /
-//     COOLDOWN are declared for forward compatibility only and are NOT reachable
-//     yet — they will be wired up as Regime/Structure/Setup/Trigger/Risk/Veto
-//     modules are added in later phases.
+// MODULES INCLUDED SO FAR:
+//   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
+//      — confirmed working by user on OKX:BTCUSDT and TVC:DEU40.
+//   2. MARKET REGIME + VOLATILITY REGIME + REGIME CONFIDENCE (Madde 9, 10, 11) —
+//      next module per the master hierarchy (Madde 4: DATA GATE -> MARKET
+//      REGIME), added now because it is the first module that actually
+//      produces evidence (EvidenceFamily.CONTEXT_REGIME / VOLATILITY, Madde 5),
+//      making it something the user can actually test on-chart.
 //
-// Explicitly OUT of scope for this file (deferred to later phases/modules):
-//   - Compact panel (Madde 114), alert engine (Madde 116-117), regime/structure/
-//     location/setup/trigger/confirmation/risk/veto/score engines, MTF (no
-//     request.* calls are used here at all, so the Madde 110 request budget is
-//     currently 0/40).
-//   - The small table below is a temporary DIAGNOSTIC aid to verify the data
-//     gate is working; it is not the Madde 114 panel and will be replaced.
+// EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
+//   - Structure Engine (Madde 14+, Phase C) — so regime classification here
+//     uses ONLY trend (EMA/slope/ADX) + volatility, NOT structure (HH/HL/BOS/
+//     CHoCH), per Madde 121 Phase B scope ("market regime refinement" only).
+//     Regime Confidence's "structure agreement" factor (Madde 11) is therefore
+//     NOT included yet and will be added once Structure Engine exists.
+//   - Full Evidence Family aggregation / family caps (Madde 42) — deferred
+//     until 2+ modules produce comparable scores to cap against each other.
+//     The EvidenceFamily enum below is declared now only to document which
+//     family each module's output belongs to.
+//   - MTF (no request.* calls anywhere in this file — request budget 0/40,
+//     Madde 110), Compact panel (Madde 114), Alert engine (Madde 116-117),
+//     Setup/Trigger/Risk/Veto/Decision engines, WATCH/SETUP/... state
+//     transitions (state machine still only reaches DATA_INVALID/FLAT).
 //
-// Non-repaint policy (Madde 33-34): all gate checks are computed every tick for
-// live diagnostics (clearly marked LIVE), but the authoritative `currentState`
-// only advances on barstate.isconfirmed, so historical state never repaints.
+// Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
+// live every tick (clearly marked), but `currentState`, `primaryRegime`,
+// `barsInRegime` only ever advance on barstate.isconfirmed.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A: Data Gate", shorttitle = "BTC-PRO-A", overlay = true)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A/B: Data Gate + Market Regime", shorttitle = "BTC-PRO-AB", overlay = true)
 
-var string ENGINE_VERSION = "v0.1.0-phaseA"
+var string ENGINE_VERSION = "v0.2.0-phaseB-regime"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -66,7 +70,69 @@ f_stateLabel(EngineState s) =>
 var EngineState currentState = EngineState.DATA_INVALID
 
 // -----------------------------------------------------------------------------
-// INPUTS
+// EVIDENCE FAMILY TAXONOMY (Madde 5) — documentation-only at this stage.
+// No scoring/aggregation engine exists yet; this enum exists so each module's
+// output can be explicitly tagged with the family it belongs to as it is
+// built, instead of retrofitting the taxonomy later.
+// -----------------------------------------------------------------------------
+enum EvidenceFamily
+    CONTEXT_REGIME
+    DIRECTION
+    STRUCTURE
+    LOCATION
+    TRIGGER
+    PARTICIPATION
+    MOMENTUM
+    VOLATILITY
+    MTF
+    RISK
+    EXECUTION
+
+// -----------------------------------------------------------------------------
+// MARKET REGIME ENUMS (Madde 9)
+// -----------------------------------------------------------------------------
+enum RegimeType
+    BULL_TREND
+    BEAR_TREND
+    RANGE
+    TRANSITION
+
+enum VolRegime
+    LOW_VOL
+    NORMAL_VOL
+    HIGH_VOL
+    EXTREME_VOL
+
+enum ConfidenceLevel
+    LOW
+    MEDIUM
+    HIGH
+
+f_regimeLabel(RegimeType r) =>
+    switch r
+        RegimeType.BULL_TREND => "BULL_TREND"
+        RegimeType.BEAR_TREND => "BEAR_TREND"
+        RegimeType.RANGE      => "RANGE"
+        RegimeType.TRANSITION => "TRANSITION"
+        =>                        "UNKNOWN"
+
+f_volLabel(VolRegime v) =>
+    switch v
+        VolRegime.LOW_VOL     => "LOW_VOL"
+        VolRegime.NORMAL_VOL  => "NORMAL_VOL"
+        VolRegime.HIGH_VOL    => "HIGH_VOL"
+        VolRegime.EXTREME_VOL => "EXTREME_VOL"
+        =>                        "UNKNOWN"
+
+f_confLabel(ConfidenceLevel c) =>
+    switch c
+        ConfidenceLevel.LOW    => "LOW"
+        ConfidenceLevel.MEDIUM => "MEDIUM"
+        ConfidenceLevel.HIGH   => "HIGH"
+        =>                         "UNKNOWN"
+
+// -----------------------------------------------------------------------------
+// INPUTS — DATA GATE
 // -----------------------------------------------------------------------------
 grpSymbol = "Data Gate — Symbol & Source Validation"
 i_expectedExchange = input.string("OKX", "Expected Exchange (syminfo.prefix)", group = grpSymbol,
@@ -77,13 +143,39 @@ i_expectedQuote = input.string("USDT", "Expected Quote Currency", group = grpSym
 
 grpGate = "Data Gate — Thresholds"
 i_minBars = input.int(210, "Minimum Required Historical Bars", minval = 1, group = grpGate,
-     tooltip = "Sonraki fazlarda (örn. EMA200) kullanılacak göstergeler için ayrılmış güvenlik payı.")
+     tooltip = "EMA200 gibi göstergeler için gereken minimum geçmiş bar sayısı.")
 i_gapMult = input.float(3.0, "Data Gap Multiplier (x expected bar interval)", minval = 1.1, group = grpGate)
 i_abnormalAtrMult = input.float(8.0, "Abnormal Bar Range Multiplier (x ATR14)", minval = 1.0, group = grpGate)
 i_staleBarsThreshold = input.int(10, "Stale Feed — Consecutive Identical Bars", minval = 2, group = grpGate)
 
+// -----------------------------------------------------------------------------
+// INPUTS — MARKET REGIME (Madde 9, 10, 13)
+// -----------------------------------------------------------------------------
+grpTrend = "Market Regime — Trend"
+i_emaFastLen = input.int(20, "EMA Fast", minval = 1, group = grpTrend)
+i_emaMidLen  = input.int(50, "EMA Mid", minval = 1, group = grpTrend)
+i_emaSlowLen = input.int(200, "EMA Slow", minval = 1, group = grpTrend)
+i_slopeLookback = input.int(10, "EMA Mid Slope Lookback (bars)", minval = 1, group = grpTrend)
+i_adxLen = input.int(14, "ADX/DMI Length", minval = 1, group = grpTrend)
+i_adxTrendThreshold = input.float(20.0, "ADX Trend Threshold", minval = 1, group = grpTrend,
+     tooltip = "Başlangıç hipotezi — optimize edilmedi (Madde 10, 47).")
+
+grpRange = "Market Regime — Range Detection"
+i_rangeLookback = input.int(20, "Range Containment Lookback (bars)", minval = 2, group = grpRange)
+i_rangeAtrThreshold = input.float(2.5, "Range Containment Threshold (band width / ATR)", minval = 0.5, group = grpRange)
+
+grpRegimePersist = "Market Regime — Persistence"
+i_regimeConfirmBars = input.int(3, "Regime Confirmation Bars (hysteresis)", minval = 1, group = grpRegimePersist,
+     tooltip = "Tek barlık flip-flop'u önlemek için minimum onay bar sayısı (Madde 10).")
+
+grpVol = "Volatility Regime"
+i_volLookback = input.int(100, "ATR% Percentile Lookback (bars)", minval = 10, group = grpVol)
+i_volLowPct = input.float(25.0, "Low Vol Percentile Ceiling", minval = 0, maxval = 100, group = grpVol)
+i_volHighPct = input.float(75.0, "High Vol Percentile Floor", minval = 0, maxval = 100, group = grpVol)
+i_volExtremePct = input.float(90.0, "Extreme Vol Percentile Floor", minval = 0, maxval = 100, group = grpVol)
+
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
-i_showDebug = input.bool(true, "Show Data Gate Diagnostics Table", group = grpDebug)
+i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
 i_showBg    = input.bool(true, "Highlight DATA_INVALID bars", group = grpDebug)
 
 // -----------------------------------------------------------------------------
@@ -145,8 +237,81 @@ if barstate.isconfirmed
     // else: currentState is FLAT (or, once later phases exist, a state those
     // modules manage) and data remains valid — nothing to do here. WATCH/SETUP/
     // ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT/IN_POSITION/EXIT/COOLDOWN
-    // transitions are added when Regime/Structure/Setup/Trigger/Risk/Veto
-    // modules exist (Phase B onward).
+    // transitions are added when Setup/Trigger/Risk/Veto/Decision modules
+    // exist (Phase D/F onward).
+
+// -----------------------------------------------------------------------------
+// MARKET REGIME — TREND (Madde 10, 13). Structure is NOT used yet (Phase C).
+// -----------------------------------------------------------------------------
+emaFast = ta.ema(close, i_emaFastLen)
+emaMid  = ta.ema(close, i_emaMidLen)
+emaSlow = ta.ema(close, i_emaSlowLen)
+
+emaAlignmentBull = emaFast > emaMid and emaMid > emaSlow
+emaAlignmentBear = emaFast < emaMid and emaMid < emaSlow
+priceAboveAll = close > emaFast and close > emaMid and close > emaSlow
+priceBelowAll = close < emaFast and close < emaMid and close < emaSlow
+slopeUp   = emaMid > emaMid[i_slopeLookback]
+slopeDown = emaMid < emaMid[i_slopeLookback]
+
+[diPlus, diMinus, adxValue] = ta.dmi(i_adxLen, i_adxLen)
+diBullish   = diPlus > diMinus
+trendStrong = not na(adxValue) and adxValue >= i_adxTrendThreshold
+
+bullVotes = (emaAlignmentBull ? 1 : 0) + (priceAboveAll ? 1 : 0) + (slopeUp ? 1 : 0) + (diBullish ? 1 : 0)
+bearVotes = (emaAlignmentBear ? 1 : 0) + (priceBelowAll ? 1 : 0) + (slopeDown ? 1 : 0) + (not diBullish ? 1 : 0)
+
+rangeBandWidth = ta.highest(high, i_rangeLookback) - ta.lowest(low, i_rangeLookback)
+priceContained = atrValid and rangeBandWidth < atrValue * i_rangeAtrThreshold
+
+rawRegime = trendStrong and bullVotes >= 3 ? RegimeType.BULL_TREND :
+             trendStrong and bearVotes >= 3 ? RegimeType.BEAR_TREND :
+             not trendStrong and priceContained ? RegimeType.RANGE :
+             RegimeType.TRANSITION
+
+// Persistence / hysteresis (Madde 10) — only advances on confirmed, data-valid bars.
+var RegimeType primaryRegime = RegimeType.TRANSITION
+var RegimeType pendingRegime = RegimeType.TRANSITION
+var int pendingBars  = 0
+var int barsInRegime = 0
+
+if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
+    pendingBars  := rawRegime == pendingRegime ? pendingBars + 1 : 1
+    pendingRegime := rawRegime
+
+    if pendingBars >= i_regimeConfirmBars and primaryRegime != pendingRegime
+        primaryRegime := pendingRegime
+        barsInRegime  := 1
+    else
+        barsInRegime := barsInRegime + 1
+
+// -----------------------------------------------------------------------------
+// VOLATILITY REGIME (Madde 9, 26) — separate overlay, never mixed with primaryRegime.
+// -----------------------------------------------------------------------------
+atrPct     = atrValid ? (atrValue / close) * 100 : na
+atrPctRank = na(atrPct) ? na : ta.percentrank(atrPct, i_volLookback)
+
+volRegime = na(atrPctRank) ? VolRegime.NORMAL_VOL :
+             atrPctRank >= i_volExtremePct ? VolRegime.EXTREME_VOL :
+             atrPctRank >= i_volHighPct ? VolRegime.HIGH_VOL :
+             atrPctRank <= i_volLowPct ? VolRegime.LOW_VOL :
+             VolRegime.NORMAL_VOL
+
+// -----------------------------------------------------------------------------
+// REGIME CONFIDENCE (Madde 11 + v3.1 EK) — NOT a binding gate yet (that belongs
+// to the Decision Engine, Madde 37, Phase F); exposed here for later use.
+// Structure-agreement factor deferred until Structure Engine exists (Phase C).
+// -----------------------------------------------------------------------------
+maxVotes = math.max(bullVotes, bearVotes)
+trendAgreementScore = maxVotes >= 4 ? 2 : maxVotes == 3 ? 1 : 0
+volStabilityScore   = volRegime == VolRegime.EXTREME_VOL ? 0 : 1
+persistenceScore    = barsInRegime >= i_regimeConfirmBars * 2 ? 1 : 0
+confidenceScoreRaw  = trendAgreementScore + volStabilityScore + persistenceScore
+
+regimeConfidence = primaryRegime == RegimeType.TRANSITION ? ConfidenceLevel.LOW :
+                     confidenceScoreRaw >= 3 ? ConfidenceLevel.HIGH :
+                     confidenceScoreRaw == 2 ? ConfidenceLevel.MEDIUM :
+                     ConfidenceLevel.LOW
 
 // -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
@@ -174,7 +339,7 @@ if staleDataDetected
     array.push(reasons, "STALE FEED")
 reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
-var table debugTable = table.new(position.top_right, 2, 13, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, 17, border_width = 1)
 
 if i_showDebug and barstate.islast
     table.cell(debugTable, 0, 0, "ENGINE", text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -204,21 +369,44 @@ if i_showDebug and barstate.islast
     table.cell(debugTable, 0, 8, "OHLC / VOLUME", text_halign = text.align_left)
     table.cell(debugTable, 1, 8, (ohlcValid ? "OK" : "INVALID") + " / " + (volumeValid ? "OK" : "NA"), text_color = (ohlcValid and volumeValid) ? color.gray : color.red, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 9, "ATR(14)", text_halign = text.align_left)
-    table.cell(debugTable, 1, 9, atrValid ? str.tostring(atrValue) : "N/A", text_color = atrValid ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 10, "GAP / ABNORMAL / STALE", text_halign = text.align_left)
-    table.cell(debugTable, 1, 10, (dataGapDetected or abnormalBar or staleDataDetected) ?
+    table.cell(debugTable, 0, 9, "GAP / ABNORMAL / STALE", text_halign = text.align_left)
+    table.cell(debugTable, 1, 9, (dataGapDetected or abnormalBar or staleDataDetected) ?
          ((dataGapDetected ? "GAP " : "") + (abnormalBar ? "ABN " : "") + (staleDataDetected ? "STALE" : "")) : "OK",
          text_color = (dataGapDetected or abnormalBar or staleDataDetected) ? color.red : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 11, "ISSUES", text_halign = text.align_left)
-    table.cell(debugTable, 1, 11, reasonsText, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 10, "ISSUES", text_halign = text.align_left)
+    table.cell(debugTable, 1, 10, reasonsText, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 12, "REQUEST BUDGET", text_halign = text.align_left)
-    table.cell(debugTable, 1, 12, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 11, "REGIME", text_halign = text.align_left)
+    table.cell(debugTable, 1, 11, f_regimeLabel(primaryRegime) + " (" + str.tostring(barsInRegime) + " bars)",
+         text_color = primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : primaryRegime == RegimeType.RANGE ? color.yellow : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 12, "REGIME CONFIDENCE", text_halign = text.align_left)
+    table.cell(debugTable, 1, 12, f_confLabel(regimeConfidence),
+         text_color = regimeConfidence == ConfidenceLevel.HIGH ? color.lime : regimeConfidence == ConfidenceLevel.MEDIUM ? color.yellow : color.red,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 13, "TREND VOTES (bull/bear)", text_halign = text.align_left)
+    table.cell(debugTable, 1, 13, str.tostring(bullVotes) + "/4  " + str.tostring(bearVotes) + "/4", text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 14, "ADX(" + str.tostring(i_adxLen) + ")", text_halign = text.align_left)
+    table.cell(debugTable, 1, 14, not na(adxValue) ? str.tostring(adxValue, "#.##") + (trendStrong ? " (strong)" : " (weak)") : "N/A",
+         text_color = trendStrong ? color.gray : color.silver, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 15, "VOLATILITY", text_halign = text.align_left)
+    table.cell(debugTable, 1, 15, f_volLabel(volRegime) + (not na(atrPctRank) ? " (" + str.tostring(atrPctRank, "#") + "pct)" : ""),
+         text_color = volRegime == VolRegime.EXTREME_VOL ? color.red : volRegime == VolRegime.HIGH_VOL ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 16, "REQUEST BUDGET", text_halign = text.align_left)
+    table.cell(debugTable, 1, 16, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
 // -----------------------------------------------------------------------------
 bgcolor(i_showBg and currentState == EngineState.DATA_INVALID ? color.new(color.red, 90) : na)
+
+plot(emaFast, "EMA Fast", color = color.new(color.teal, 30))
+plot(emaMid,  "EMA Mid",  color = color.new(color.orange, 30))
+plot(emaSlow, "EMA Slow", color = color.new(color.purple, 30))
