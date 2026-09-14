@@ -2,41 +2,53 @@
 
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
-// PHASE A (Data Gate) + PHASE B (Market Regime) — built incrementally, one
-// module at a time, each confirmed working before the next is added (Madde 122).
+// PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C, part 1 (Structure)
+// — built incrementally, one module at a time, each confirmed working before
+// the next is added (Madde 122).
 //
 // MODULES INCLUDED SO FAR:
 //   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
 //      — confirmed working by user on OKX:BTCUSDT and TVC:DEU40.
-//   2. MARKET REGIME + VOLATILITY REGIME + REGIME CONFIDENCE (Madde 9, 10, 11) —
-//      next module per the master hierarchy (Madde 4: DATA GATE -> MARKET
-//      REGIME), added now because it is the first module that actually
-//      produces evidence (EvidenceFamily.CONTEXT_REGIME / VOLATILITY, Madde 5),
-//      making it something the user can actually test on-chart.
+//   2. MARKET REGIME + VOLATILITY REGIME + REGIME CONFIDENCE (Madde 9, 10, 11)
+//      — confirmed working by user (TRANSITION/LOW confidence in a chop zone;
+//      persistence/hysteresis held through Replay without flip-flopping).
+//   3. MARKET STRUCTURE — CENTRAL CONFIRMED-SWING FUNCTION + HH/HL/LH/LL +
+//      BOS/CHoCH (Madde 14, 61) — next module per the master hierarchy
+//      (Madde 4: DATA GATE -> MARKET REGIME -> MARKET STRUCTURE). This is the
+//      ONE central swing-detection function every later module (Zone,
+//      Fibonacci, Wyckoff/Elliott Proxy) must reference (Madde 14 v3.1 EK) —
+//      none of them may invent their own pivot logic. A separate "Dow" module
+//      was intentionally NOT added: Madde 61 states Dow is redundant with
+//      Structure, so building it twice would just double-count the same
+//      evidence family (Madde 6).
 //
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
-//   - Structure Engine (Madde 14+, Phase C) — so regime classification here
-//     uses ONLY trend (EMA/slope/ADX) + volatility, NOT structure (HH/HL/BOS/
-//     CHoCH), per Madde 121 Phase B scope ("market regime refinement" only).
-//     Regime Confidence's "structure agreement" factor (Madde 11) is therefore
-//     NOT included yet and will be added once Structure Engine exists.
+//   - Support/Resistance zones (Madde 15-16), Fibonacci (Madde 17), and the
+//     full breakout/retest state machine (Madde 20-21) — these are the next
+//     items in Phase C but are separate modules from basic Structure.
+//   - Regime Confidence's "structure agreement" factor (Madde 11) is NOT
+//     wired up yet even though Structure now exists — that integration is
+//     deferred to its own reviewable step rather than silently folded in here.
 //   - Full Evidence Family aggregation / family caps (Madde 42) — deferred
-//     until 2+ modules produce comparable scores to cap against each other.
-//     The EvidenceFamily enum below is declared now only to document which
-//     family each module's output belongs to.
+//     until scoring/normalization (Madde 41) exists. The EvidenceFamily enum
+//     below is declared now only to document which family each module's
+//     output belongs to.
 //   - MTF (no request.* calls anywhere in this file — request budget 0/40,
 //     Madde 110), Compact panel (Madde 114), Alert engine (Madde 116-117),
-//     Setup/Trigger/Risk/Veto/Decision engines, WATCH/SETUP/... state
+//     Location/Setup/Trigger/Risk/Veto/Decision engines, WATCH/SETUP/... state
 //     transitions (state machine still only reaches DATA_INVALID/FLAT).
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
-// `barsInRegime` only ever advance on barstate.isconfirmed.
+// `barsInRegime`, and all Structure state (swings, bias, BOS/CHoCH) only ever
+// advance on barstate.isconfirmed. Pivot detection itself (ta.pivothigh/low)
+// is called unconditionally every bar (required for correct internal ta.*
+// history tracking) — only the resulting STATE UPDATE is confirmed-gated.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A/B: Data Gate + Market Regime", shorttitle = "BTC-PRO-AB", overlay = true)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure", shorttitle = "BTC-PRO-ABC", overlay = true, max_labels_count = 200)
 
-var string ENGINE_VERSION = "v0.2.0-phaseB-regime"
+var string ENGINE_VERSION = "v0.3.0-phaseC-structure"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -74,6 +86,8 @@ var EngineState currentState = EngineState.DATA_INVALID
 // No scoring/aggregation engine exists yet; this enum exists so each module's
 // output can be explicitly tagged with the family it belongs to as it is
 // built, instead of retrofitting the taxonomy later.
+// Producers so far: CONTEXT_REGIME + VOLATILITY (Market Regime module),
+// STRUCTURE (this module, also standing in for "Dow" per Madde 61).
 // -----------------------------------------------------------------------------
 enum EvidenceFamily
     CONTEXT_REGIME
@@ -132,6 +146,50 @@ f_confLabel(ConfidenceLevel c) =>
         =>                         "UNKNOWN"
 
 // -----------------------------------------------------------------------------
+// MARKET STRUCTURE ENUMS (Madde 14, 61)
+// -----------------------------------------------------------------------------
+enum SwingLabel
+    NONE
+    HH
+    LH
+    HL
+    LL
+
+enum StructureBias
+    NEUTRAL
+    BULLISH
+    BEARISH
+
+enum StructureEvent
+    NONE
+    BOS_UP
+    BOS_DOWN
+    CHOCH_UP
+    CHOCH_DOWN
+
+f_swingLabel(SwingLabel s) =>
+    switch s
+        SwingLabel.HH => "HH"
+        SwingLabel.LH => "LH"
+        SwingLabel.HL => "HL"
+        SwingLabel.LL => "LL"
+        =>                "N/A"
+
+f_biasLabel(StructureBias b) =>
+    switch b
+        StructureBias.BULLISH => "BULLISH"
+        StructureBias.BEARISH => "BEARISH"
+        =>                        "NEUTRAL"
+
+f_structEventLabel(StructureEvent e) =>
+    switch e
+        StructureEvent.BOS_UP    => "BOS UP"
+        StructureEvent.BOS_DOWN  => "BOS DOWN"
+        StructureEvent.CHOCH_UP  => "CHoCH UP"
+        StructureEvent.CHOCH_DOWN => "CHoCH DOWN"
+        =>                            "NONE"
+
+// -----------------------------------------------------------------------------
 // INPUTS — DATA GATE
 // -----------------------------------------------------------------------------
 grpSymbol = "Data Gate — Symbol & Source Validation"
@@ -173,6 +231,15 @@ i_volLookback = input.int(100, "ATR% Percentile Lookback (bars)", minval = 10, g
 i_volLowPct = input.float(25.0, "Low Vol Percentile Ceiling", minval = 0, maxval = 100, group = grpVol)
 i_volHighPct = input.float(75.0, "High Vol Percentile Floor", minval = 0, maxval = 100, group = grpVol)
 i_volExtremePct = input.float(90.0, "Extreme Vol Percentile Floor", minval = 0, maxval = 100, group = grpVol)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MARKET STRUCTURE (Madde 14)
+// -----------------------------------------------------------------------------
+grpStructure = "Market Structure — Swing Detection"
+i_pivotLeft  = input.int(5, "Pivot Left Bars", minval = 1, group = grpStructure)
+i_pivotRight = input.int(5, "Pivot Right Bars", minval = 1, group = grpStructure,
+     tooltip = "Bir swing yalnızca sağında bu kadar bar oluştuktan sonra 'bilinir' (KNOWN_TIME != SWING_TIME, Madde 14). Repaint yok.")
+i_showStructureMarks = input.bool(true, "Show Swing/BOS/CHoCH Markers", group = grpStructure)
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -237,11 +304,12 @@ if barstate.isconfirmed
     // else: currentState is FLAT (or, once later phases exist, a state those
     // modules manage) and data remains valid — nothing to do here. WATCH/SETUP/
     // ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT/IN_POSITION/EXIT/COOLDOWN
-    // transitions are added when Setup/Trigger/Risk/Veto/Decision modules
-    // exist (Phase D/F onward).
+    // transitions are added when Location/Setup/Trigger/Risk/Veto/Decision
+    // modules exist (Phase C+/F onward).
 
 // -----------------------------------------------------------------------------
-// MARKET REGIME — TREND (Madde 10, 13). Structure is NOT used yet (Phase C).
+// MARKET REGIME — TREND (Madde 10, 13). Structure exists now (below) but is
+// NOT yet wired into Regime Confidence — see header note.
 // -----------------------------------------------------------------------------
 emaFast = ta.ema(close, i_emaFastLen)
 emaMid  = ta.ema(close, i_emaMidLen)
@@ -300,7 +368,7 @@ volRegime = na(atrPctRank) ? VolRegime.NORMAL_VOL :
 // -----------------------------------------------------------------------------
 // REGIME CONFIDENCE (Madde 11 + v3.1 EK) — NOT a binding gate yet (that belongs
 // to the Decision Engine, Madde 37, Phase F); exposed here for later use.
-// Structure-agreement factor deferred until Structure Engine exists (Phase C).
+// Structure-agreement factor still NOT included (see header note).
 // -----------------------------------------------------------------------------
 maxVotes = math.max(bullVotes, bearVotes)
 trendAgreementScore = maxVotes >= 4 ? 2 : maxVotes == 3 ? 1 : 0
@@ -312,6 +380,87 @@ regimeConfidence = primaryRegime == RegimeType.TRANSITION ? ConfidenceLevel.LOW 
                      confidenceScoreRaw >= 3 ? ConfidenceLevel.HIGH :
                      confidenceScoreRaw == 2 ? ConfidenceLevel.MEDIUM :
                      ConfidenceLevel.LOW
+
+// -----------------------------------------------------------------------------
+// MARKET STRUCTURE — CENTRAL CONFIRMED-SWING FUNCTION (Madde 14 v3.1 EK)
+// ta.pivothigh/low are called UNCONDITIONALLY every bar (required for correct
+// internal history tracking); only the resulting state update is gated on
+// barstate.isconfirmed below.
+// -----------------------------------------------------------------------------
+pivotHighPrice = ta.pivothigh(i_pivotLeft, i_pivotRight)
+pivotLowPrice  = ta.pivotlow(i_pivotLeft, i_pivotRight)
+
+var float lastSwingHighPrice    = na   // last CONFIRMED swing high (KNOWN at lastSwingHighKnownBar)
+var int   lastSwingHighSwingBar = na   // SWING_TIME (bar it actually occurred)
+var int   lastSwingHighKnownBar = na   // KNOWN_TIME (bar the script learned about it)
+var float prevSwingHighPrice    = na
+
+var float lastSwingLowPrice    = na
+var int   lastSwingLowSwingBar = na
+var int   lastSwingLowKnownBar = na
+var float prevSwingLowPrice    = na
+
+var SwingLabel lastHighLabel = SwingLabel.NONE
+var SwingLabel lastLowLabel  = SwingLabel.NONE
+var StructureBias structureBias = StructureBias.NEUTRAL
+var StructureEvent lastStructureEvent = StructureEvent.NONE
+var int lastStructureEventBar = na
+
+// Break-of-level checks against the most recently CONFIRMED swing levels.
+// Called UNCONDITIONALLY every bar (ta.crossover/crossunder must not be
+// called inside an `if` — Madde 124 syntax/logic QA); only the resulting
+// state update (below) is confirmed-bar-gated, so no repaint/future leak.
+crossedAboveLastHigh = ta.crossover(close, lastSwingHighPrice)
+crossedBelowLastLow  = ta.crossunder(close, lastSwingLowPrice)
+
+bosUpEvent    = false
+bosDownEvent  = false
+chochUpEvent  = false
+chochDownEvent = false
+
+if barstate.isconfirmed
+    // 1) Register new confirmed swings (Madde 14 — KNOWN_TIME vs SWING_TIME)
+    if not na(pivotHighPrice)
+        prevSwingHighPrice := lastSwingHighPrice
+        lastHighLabel := na(prevSwingHighPrice) ? SwingLabel.NONE : (pivotHighPrice > prevSwingHighPrice ? SwingLabel.HH : SwingLabel.LH)
+        lastSwingHighPrice := pivotHighPrice
+        lastSwingHighSwingBar := bar_index - i_pivotRight
+        lastSwingHighKnownBar := bar_index
+
+    if not na(pivotLowPrice)
+        prevSwingLowPrice := lastSwingLowPrice
+        lastLowLabel := na(prevSwingLowPrice) ? SwingLabel.NONE : (pivotLowPrice > prevSwingLowPrice ? SwingLabel.HL : SwingLabel.LL)
+        lastSwingLowPrice := pivotLowPrice
+        lastSwingLowSwingBar := bar_index - i_pivotRight
+        lastSwingLowKnownBar := bar_index
+
+    // 2) BOS / CHoCH — break of a previously CONFIRMED swing level (Madde 14, 61).
+    // First break after NEUTRAL establishes initial bias (treated as CHoCH);
+    // a break agreeing with current bias is BOS (continuation), a break
+    // against it is CHoCH (reversal).
+    if crossedAboveLastHigh
+        if structureBias == StructureBias.BULLISH
+            bosUpEvent := true
+            lastStructureEvent := StructureEvent.BOS_UP
+        else
+            chochUpEvent := true
+            structureBias := StructureBias.BULLISH
+            lastStructureEvent := StructureEvent.CHOCH_UP
+        lastStructureEventBar := bar_index
+
+    if crossedBelowLastLow
+        if structureBias == StructureBias.BEARISH
+            bosDownEvent := true
+            lastStructureEvent := StructureEvent.BOS_DOWN
+        else
+            chochDownEvent := true
+            structureBias := StructureBias.BEARISH
+            lastStructureEvent := StructureEvent.CHOCH_DOWN
+        lastStructureEventBar := bar_index
+
+swingHighAgeText = na(lastSwingHighSwingBar) ? "N/A" : str.tostring(bar_index - lastSwingHighSwingBar) + " bars ago"
+swingLowAgeText  = na(lastSwingLowSwingBar) ? "N/A" : str.tostring(bar_index - lastSwingLowSwingBar) + " bars ago"
+lastEventAgeText = na(lastStructureEventBar) ? "" : " (" + str.tostring(bar_index - lastStructureEventBar) + " bars ago)"
 
 // -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
@@ -339,7 +488,7 @@ if staleDataDetected
     array.push(reasons, "STALE FEED")
 reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
-var table debugTable = table.new(position.top_right, 2, 17, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, 21, border_width = 1)
 
 if i_showDebug and barstate.islast
     table.cell(debugTable, 0, 0, "ENGINE", text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -399,8 +548,27 @@ if i_showDebug and barstate.islast
          text_color = volRegime == VolRegime.EXTREME_VOL ? color.red : volRegime == VolRegime.HIGH_VOL ? color.orange : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 16, "REQUEST BUDGET", text_halign = text.align_left)
-    table.cell(debugTable, 1, 16, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 16, "STRUCTURE BIAS", text_halign = text.align_left)
+    table.cell(debugTable, 1, 16, f_biasLabel(structureBias),
+         text_color = structureBias == StructureBias.BULLISH ? color.lime : structureBias == StructureBias.BEARISH ? color.red : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 17, "LAST SWING HIGH", text_halign = text.align_left)
+    table.cell(debugTable, 1, 17, f_swingLabel(lastHighLabel) + " " + (na(lastSwingHighPrice) ? "N/A" : str.tostring(lastSwingHighPrice)) + " (" + swingHighAgeText + ")",
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 18, "LAST SWING LOW", text_halign = text.align_left)
+    table.cell(debugTable, 1, 18, f_swingLabel(lastLowLabel) + " " + (na(lastSwingLowPrice) ? "N/A" : str.tostring(lastSwingLowPrice)) + " (" + swingLowAgeText + ")",
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 19, "LAST EVENT", text_halign = text.align_left)
+    table.cell(debugTable, 1, 19, f_structEventLabel(lastStructureEvent) + lastEventAgeText,
+         text_color = lastStructureEvent == StructureEvent.BOS_UP or lastStructureEvent == StructureEvent.CHOCH_UP ? color.lime :
+                       lastStructureEvent == StructureEvent.BOS_DOWN or lastStructureEvent == StructureEvent.CHOCH_DOWN ? color.red : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 20, "REQUEST BUDGET", text_halign = text.align_left)
+    table.cell(debugTable, 1, 20, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -410,3 +578,15 @@ bgcolor(i_showBg and currentState == EngineState.DATA_INVALID ? color.new(color.
 plot(emaFast, "EMA Fast", color = color.new(color.teal, 30))
 plot(emaMid,  "EMA Mid",  color = color.new(color.orange, 30))
 plot(emaSlow, "EMA Slow", color = color.new(color.purple, 30))
+
+plotshape(i_showStructureMarks and not na(pivotHighPrice) ? pivotHighPrice : na, title = "Swing High",
+     style = shape.triangledown, location = location.absolute, offset = -i_pivotRight, color = color.red, size = size.tiny)
+plotshape(i_showStructureMarks and not na(pivotLowPrice) ? pivotLowPrice : na, title = "Swing Low",
+     style = shape.triangleup, location = location.absolute, offset = -i_pivotRight, color = color.lime, size = size.tiny)
+
+if i_showStructureMarks and barstate.isconfirmed and (bosUpEvent or chochUpEvent)
+    label.new(bar_index, high, bosUpEvent ? "BOS" : "CHoCH", style = label.style_label_down,
+         color = bosUpEvent ? color.new(color.lime, 0) : color.new(color.blue, 0), textcolor = color.white, size = size.tiny)
+if i_showStructureMarks and barstate.isconfirmed and (bosDownEvent or chochDownEvent)
+    label.new(bar_index, low, bosDownEvent ? "BOS" : "CHoCH", style = label.style_label_up,
+         color = bosDownEvent ? color.new(color.red, 0) : color.new(color.orange, 0), textcolor = color.white, size = size.tiny)
