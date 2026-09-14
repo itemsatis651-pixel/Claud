@@ -48,11 +48,20 @@
 // `barsInRegime`, Structure state, and all Zone state only ever advance on
 // barstate.isconfirmed. ta.* functions (pivots, crossover/crossunder) are
 // called unconditionally every bar; only the resulting STATE UPDATE is gated.
+//
+// v0.4.1 QA FIX (🤍, Madde 125): RE10045 on bar 0 of a fresh chart —
+// `array.get()` index out of bounds inside f_updateZones(). Root cause: Pine's
+// `for i = a to b` does NOT skip when b < a — it still runs at least once
+// (counting down), so on an empty array `to array.size(zones) - 1` (= -1)
+// executed one iteration at index 0 against a zero-length array. Fixed by
+// guarding every such loop (f_upsertZone, f_updateZones, f_nearestZone, and
+// the three zone/box-drawing loops) with an explicit `array.size(...) > 0`
+// check before entering the `for`.
 // =============================================================================
 
 indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure + Zones", shorttitle = "BTC-PRO-ABCD", overlay = true, max_labels_count = 200, max_boxes_count = 50)
 
-var string ENGINE_VERSION = "v0.4.0-phaseC-zones"
+var string ENGINE_VERSION = "v0.4.1-phaseC-zones-fix"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -213,7 +222,11 @@ type Zone
 f_upsertZone(array<Zone> zones, float zHigh, float zLow, int swingBar, int knownBar, float atrVal, float clusterMult, int maxZones) =>
     float newCenter = (zHigh + zLow) / 2
     int mergedIndex = -1
-    if atrVal > 0
+    // Pine's `for a to b` runs at least once even when b < a (it counts DOWN
+    // in that case) — an empty array (size 0) makes `to array.size(zones)-1`
+    // evaluate to -1, which without this guard still executes one iteration
+    // at index 0 and crashes array.get() on bar 0. Always guard size > 0.
+    if atrVal > 0 and array.size(zones) > 0
         for i = 0 to array.size(zones) - 1
             Zone z = array.get(zones, i)
             if not z.broken
@@ -235,32 +248,35 @@ f_upsertZone(array<Zone> zones, float zHigh, float zLow, int swingBar, int known
     true
 
 f_updateZones(array<Zone> zones, bool isResistance, float barHigh, float barLow, float barClose, int curBar) =>
-    for i = 0 to array.size(zones) - 1
-        Zone z = array.get(zones, i)
-        if not z.broken
-            bool touched = barHigh >= z.zoneLow and barLow <= z.zoneHigh
-            if touched and z.lastTouchBar != curBar
-                z.touchCount := z.touchCount + 1
-                z.lastTouchBar := curBar
-            if isResistance and barClose > z.zoneHigh
-                z.broken := true
-                z.brokenBar := curBar
-            if not isResistance and barClose < z.zoneLow
-                z.broken := true
-                z.brokenBar := curBar
+    // Same empty-array guard as f_upsertZone — see comment there.
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                bool touched = barHigh >= z.zoneLow and barLow <= z.zoneHigh
+                if touched and z.lastTouchBar != curBar
+                    z.touchCount := z.touchCount + 1
+                    z.lastTouchBar := curBar
+                if isResistance and barClose > z.zoneHigh
+                    z.broken := true
+                    z.brokenBar := curBar
+                if not isResistance and barClose < z.zoneLow
+                    z.broken := true
+                    z.brokenBar := curBar
     true
 
 f_nearestZone(array<Zone> zones, float refPrice) =>
     float bestDist = na
     int bestIdx = -1
-    for i = 0 to array.size(zones) - 1
-        Zone z = array.get(zones, i)
-        if not z.broken
-            float center = (z.zoneHigh + z.zoneLow) / 2
-            float dist = math.abs(refPrice - center)
-            if na(bestDist) or dist < bestDist
-                bestDist := dist
-                bestIdx := i
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                float center = (z.zoneHigh + z.zoneLow) / 2
+                float dist = math.abs(refPrice - center)
+                if na(bestDist) or dist < bestDist
+                    bestDist := dist
+                    bestIdx := i
     bestIdx
 
 f_zoneFreshness(Zone z, int curBar, int freshAgeBars, int staleAgeBars, int exhaustTouches) =>
@@ -731,22 +747,28 @@ if i_showStructureMarks and barstate.isconfirmed and (bosDownEvent or chochDownE
 var array<box> zoneBoxes = array.new<box>()
 
 if i_showZones and barstate.islast
-    for i = 0 to array.size(zoneBoxes) - 1
-        box.delete(array.get(zoneBoxes, i))
+    // Same empty-array guard as f_upsertZone above — Pine's `for a to b`
+    // still runs once at index 0 when b < a (e.g. array.size()-1 == -1 on an
+    // empty array), which crashed array.get()/array.delete() on bar 0.
+    if array.size(zoneBoxes) > 0
+        for i = 0 to array.size(zoneBoxes) - 1
+            box.delete(array.get(zoneBoxes, i))
     array.clear(zoneBoxes)
 
-    for i = 0 to array.size(resistanceZones) - 1
-        Zone z = array.get(resistanceZones, i)
-        bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
-             border_color = z.broken ? color.new(color.red, 70) : color.red,
-             bgcolor = z.broken ? color.new(color.red, 95) : color.new(color.red, 85),
-             border_style = z.broken ? line.style_dashed : line.style_solid)
-        array.push(zoneBoxes, bx)
+    if array.size(resistanceZones) > 0
+        for i = 0 to array.size(resistanceZones) - 1
+            Zone z = array.get(resistanceZones, i)
+            bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
+                 border_color = z.broken ? color.new(color.red, 70) : color.red,
+                 bgcolor = z.broken ? color.new(color.red, 95) : color.new(color.red, 85),
+                 border_style = z.broken ? line.style_dashed : line.style_solid)
+            array.push(zoneBoxes, bx)
 
-    for i = 0 to array.size(supportZones) - 1
-        Zone z = array.get(supportZones, i)
-        bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
-             border_color = z.broken ? color.new(color.lime, 70) : color.lime,
-             bgcolor = z.broken ? color.new(color.lime, 95) : color.new(color.lime, 85),
-             border_style = z.broken ? line.style_dashed : line.style_solid)
-        array.push(zoneBoxes, bx)
+    if array.size(supportZones) > 0
+        for i = 0 to array.size(supportZones) - 1
+            Zone z = array.get(supportZones, i)
+            bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
+                 border_color = z.broken ? color.new(color.lime, 70) : color.lime,
+                 bgcolor = z.broken ? color.new(color.lime, 95) : color.new(color.lime, 85),
+                 border_style = z.broken ? line.style_dashed : line.style_solid)
+            array.push(zoneBoxes, bx)
