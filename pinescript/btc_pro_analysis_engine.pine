@@ -122,6 +122,45 @@
 //      produce any automatic LONG/SHORT, and no timeframe gets its own
 //      independent score (no scoring engine exists yet regardless).
 //
+//      Phase E is now COMPLETE. Relative Strength (Madde 27, Phase E's
+//      other item) was explicitly SKIPPED by user decision, not merely
+//      postponed: Madde 27 itself says RS is not mandatory for a BTC-only
+//      system, and rather than guess a benchmark the user was asked to pick
+//      one (BTC Dominance / BTC-vs-TOTAL2 / macro DXY-SPX / skip) and chose
+//      to skip it and move straight to Phase F. No RS code, enum, or
+//      diagnostics row exists in this script — RS is simply absent, not
+//      faked as a permanent "UNAVAILABLE" placeholder (Madde 139/140: don't
+//      build UI for a feature that was declined, that would itself be a
+//      kind of fake signal of completeness).
+//
+//  11. RISK ENGINE (Madde 44-49) — first item of Phase F (Decision). A
+//      DIAGNOSTIC CALCULATOR only, exactly like Fibonacci/Zone — it is NOT
+//      wired to any entry/trade signal because no Setup Classifier exists
+//      yet (Madde 18-19, still not built) to define what a live "setup"
+//      even is. Instead of building unused generic formulas with no
+//      consumer, or fabricating a fake live signal, this computes what the
+//      stop/target/R:R/position size WOULD be for a structural LONG and a
+//      structural SHORT idea anchored on price right now, reusing the
+//      SAME nearest-zone lookups the Zone module already computed
+//      (nearestResIdx/nearestSupIdx, Madde 111 — no new zone search).
+//      Stop hierarchy (Madde 45): STRUCTURAL INVALIDATION (nearest opposing
+//      zone edge, or the last confirmed swing if no zone exists yet) +
+//      ATR BUFFER, then checked against MAX ACCEPTABLE STOP DISTANCE — a
+//      stop is never a "random %". If no structural level exists at all,
+//      the result is explicitly "NO STRUCTURAL STOP", never a fabricated
+//      number (Madde 45: "mantıklı stop yoksa NO TRADE", Madde 139/140).
+//      Target (Madde 46) is the near edge of the opposing zone, not a blind
+//      "entry + 2 ATR" (Madde 46 explicit prohibition). R:R (Madde 47) is
+//      compared against a minimum (default 1.5, stated in Madde 47 itself
+//      as a starting hypothesis to validate later, NOT to optimize now,
+//      Madde 10/47). Position sizing (Madde 48): Risk Amount = Equity x
+//      Risk%, Position Size = Risk Amount / Stop Distance; leverage
+//      defaults to 1.0 (spot/no leverage) and is never assumed higher
+//      without the user explicitly setting it (Madde 48 explicit rule).
+//      Tagged EvidenceFamily.RISK. Shown for BOTH long and short structural
+//      ideas simultaneously (Madde 50 long/short symmetry audit) — neither
+//      side is privileged.
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
 //     evidence — both now exist, but no scoring engine combines them yet,
@@ -134,15 +173,19 @@
 //     wired up, same as before — deferred to its own reviewable step.
 //   - Full Evidence Family aggregation / family caps (Madde 42) — deferred
 //     until scoring/normalization (Madde 41) exists.
-//   - Relative Strength (Madde 27, Phase E's other item — needs a benchmark
-//     decision from the user first), full multi-level MTF cascade (only ONE
-//     HTF level is requested so far, not the full 1D/4H/1H/15m stack),
-//     Compact panel (Madde 114), Alert engine (Madde 116-117), Setup/
-//     Trigger/Risk/Veto/Decision engines, WATCH/SETUP/... state transitions
-//     (state machine still only reaches DATA_INVALID/FLAT — Setup
-//     Classifier, which would unlock WATCH, does not exist yet). Phase C
-//     AND Phase D are complete; Phase E is in progress (MTF refinement done,
-//     Relative Strength pending) per the Madde 121 roadmap.
+//   - Relative Strength — explicitly SKIPPED by user decision (see Phase E
+//     note above), not merely postponed. Full multi-level MTF cascade (only
+//     ONE HTF level is requested so far, not the full 1D/4H/1H/15m stack)
+//     remains deferred.
+//   - Compact panel (Madde 114), Alert engine (Madde 116-117), Setup
+//     Classifier (Madde 18-19 — still not built, so Risk Engine stays a
+//     diagnostic calculator, not a live signal), Trigger/Veto/Decision
+//     engines, WATCH/SETUP/... state transitions (state machine still only
+//     reaches DATA_INVALID/FLAT — the Setup Classifier is what would unlock
+//     WATCH). Position sizing beyond the Risk Engine's own diagnostic
+//     numbers (Madde 88, backtest-time sizing) is out of scope until Phase
+//     H. Phase C, D, AND E are complete; Phase F is in progress (Risk
+//     Engine done) per the Madde 121 roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -192,7 +235,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.10.0-phaseE-mtf-refinement"
+var string ENGINE_VERSION = "v0.11.0-phaseF-risk-engine"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -600,6 +643,47 @@ f_drawFibLevel(array<line> lines, array<label> labels, int startBar, int endBar,
     true
 
 // -----------------------------------------------------------------------------
+// RISK ENGINE HELPERS (Madde 44-49) — pure functions, no outer-scope
+// references, so they work identically for the LONG and SHORT structural
+// ideas below (Madde 50 long/short symmetry). `stopRaw`/`targetRaw` are the
+// UN-buffered structural levels (nearest opposing zone edge or last swing);
+// this function applies the ATR buffer and the stop-distance/R:R gates.
+// -----------------------------------------------------------------------------
+f_riskCalc(bool isLong, float entry, float stopRaw, float targetRaw, float atrVal, float atrBufferMult, float maxStopPct, float minRR) =>
+    float stopLevel = na(stopRaw) or na(atrVal) ? na : (isLong ? stopRaw - atrVal * atrBufferMult : stopRaw + atrVal * atrBufferMult)
+    float stopDist = na(stopLevel) ? na : math.abs(entry - stopLevel)
+    bool stopTooWide = not na(stopDist) and entry > 0 and stopDist > entry * maxStopPct / 100
+    float rewardDist = na(targetRaw) ? na : math.abs(targetRaw - entry)
+    float rr = (na(stopDist) or stopDist <= 0 or na(rewardDist)) ? na : rewardDist / stopDist
+    bool rrOk = not na(rr) and rr >= minRR
+    string status = na(stopLevel) ? "NO STRUCTURAL STOP" :
+         na(targetRaw) ? "NO TARGET ZONE" :
+         stopTooWide ? "STOP TOO WIDE" :
+         not rrOk ? "R:R BELOW MIN" :
+         "OK"
+    [stopLevel, targetRaw, stopDist, rewardDist, rr, status]
+
+// Madde 48: Risk Amount = Equity x Risk%, Position Size = Risk Amount / Stop
+// Distance. Leverage only changes MARGIN required, never the risk-based
+// position size itself (Madde 48: leverage never assumed without an
+// explicit, user-set value — default 1.0 = spot/no leverage).
+f_positionSize(float equity, float riskPct, float stopDist, float entry, float leverage) =>
+    float riskAmount = equity * riskPct / 100
+    float posSize = (na(stopDist) or stopDist <= 0) ? na : riskAmount / stopDist
+    float notional = na(posSize) ? na : posSize * entry
+    float margin = na(notional) or leverage <= 0 ? na : notional / leverage
+    [riskAmount, posSize, notional, margin]
+
+f_riskLine(float stopLevel, float targetLevel, float rr, string status) =>
+    "stop " + (na(stopLevel) ? "N/A" : str.tostring(stopLevel)) +
+     "  target " + (na(targetLevel) ? "N/A" : str.tostring(targetLevel)) +
+     "  R:R " + (na(rr) ? "N/A" : str.tostring(rr, "#.##")) +
+     "  " + status
+
+f_posSizeLine(float posSize, float notional, float margin) =>
+    na(posSize) ? "N/A" : str.tostring(posSize, "#.####") + " BTC  ($" + str.tostring(notional, "#.##") + " notional, $" + str.tostring(margin, "#.##") + " margin)"
+
+// -----------------------------------------------------------------------------
 // INPUTS — DATA GATE
 // -----------------------------------------------------------------------------
 grpSymbol = "Data Gate — Symbol & Source Validation"
@@ -731,6 +815,23 @@ i_mtfMode = input.string("AUTO", "HTF Selection", options = ["AUTO", "MANUAL"], 
 i_mtfManualTf = input.timeframe("240", "Manual HTF (only used if AUTO is off)", group = grpMtf)
 i_mtfEmaLen = input.int(50, "HTF Trend EMA Length", minval = 1, group = grpMtf)
 i_mtfSlopeLookback = input.int(5, "HTF EMA Slope Lookback (HTF bars)", minval = 1, group = grpMtf)
+
+// -----------------------------------------------------------------------------
+// INPUTS — RISK ENGINE (Madde 44-49) — diagnostic calculator only, no
+// setup/trigger exists yet to actually place a trade against these numbers.
+// -----------------------------------------------------------------------------
+grpRisk = "Risk Engine — diagnostic only (no live setup/trigger yet)"
+i_riskAtrBufferMult = input.float(0.5, "Stop ATR Buffer (x ATR beyond structural level)", minval = 0, group = grpRisk,
+     tooltip = "Madde 44-45: stop = STRUCTURAL INVALIDATION + ATR BUFFER, asla rastgele %.")
+i_maxStopDistancePct = input.float(5.0, "Max Acceptable Stop Distance (% of price)", minval = 0.1, group = grpRisk,
+     tooltip = "Madde 45 — stop bu mesafeden uzaksa STOP TOO WIDE.")
+i_minRR = input.float(1.5, "Minimum R:R (hard gate)", minval = 0.1, group = grpRisk,
+     tooltip = "Madde 47 — başlangıç hipotezi, optimize edilmedi (Madde 10). Tercih edilen: 2.0+.")
+i_accountEquity = input.float(10000, "Account Equity (USDT, diagnostic only)", minval = 0, group = grpRisk)
+i_riskPctPerTrade = input.float(1.0, "Risk % per Trade", minval = 0.01, maxval = 100, group = grpRisk,
+     tooltip = "Madde 48: Risk Amount = Equity x Risk%.")
+i_leverage = input.float(1.0, "Leverage (1.0 = spot / no leverage)", minval = 1.0, group = grpRisk,
+     tooltip = "Madde 48 — leverage açıkça belirtilmeden varsayılmaz; varsayılan 1.0 (spot, kaldıraçsız).")
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -1329,6 +1430,61 @@ mtfHtfText = mtfAvailable ? mtfResolvedTf + (i_mtfMode == "MANUAL" ? " (manual)"
 mtfBiasText = mtfAvailable ? f_biasLabel(htfBiasRaw) + " vs chart " + f_biasLabel(structureBias) : "N/A"
 
 // -----------------------------------------------------------------------------
+// RISK ENGINE (Madde 44-49) — first item of Phase F. DIAGNOSTIC ONLY: no
+// Setup Classifier exists yet, so this is not wired to any actual entry. It
+// reuses the SAME nearestResIdx/nearestSupIdx the Zone module already
+// computed (Madde 111 — no new zone search) as the structural stop/target
+// reference; falls back to the last confirmed swing when no zone exists yet,
+// and to a genuine "NO STRUCTURAL STOP" (never a fabricated number, Madde
+// 139/140) when neither is available.
+// -----------------------------------------------------------------------------
+riskEntry = close
+
+// array.get() must NEVER be called with an out-of-range index (-1 = "no
+// zone yet"). Pine's ternary evaluates BOTH branches eagerly (same lesson
+// as the v0.4.1 RE10045 fix — see header), so `idx >= 0 ? array.get(...) :
+// fallback` would still call array.get() on -1 and crash. Explicit if/else
+// statements are used instead so the invalid branch is never evaluated.
+
+// LONG idea: invalidated below the nearest SUPPORT, targets the nearest
+// RESISTANCE (its near edge, not a blind "entry + 2 ATR", Madde 46).
+float longStopRaw = na
+float longTargetRaw = na
+if nearestSupIdx >= 0
+    longStopRaw := array.get(supportZones, nearestSupIdx).zoneLow
+else
+    longStopRaw := lastSwingLowPrice
+if nearestResIdx >= 0
+    longTargetRaw := array.get(resistanceZones, nearestResIdx).zoneLow
+
+// SHORT idea: invalidated above the nearest RESISTANCE, targets the nearest
+// SUPPORT (its near edge). Same f_riskCalc function, just isLong=false
+// (Madde 50 — no asymmetric long/short logic).
+float shortStopRaw = na
+float shortTargetRaw = na
+if nearestResIdx >= 0
+    shortStopRaw := array.get(resistanceZones, nearestResIdx).zoneHigh
+else
+    shortStopRaw := lastSwingHighPrice
+if nearestSupIdx >= 0
+    shortTargetRaw := array.get(supportZones, nearestSupIdx).zoneHigh
+
+[longStopLevel, longTargetLevel, longStopDist, longRewardDist, longRR, longStatus] =
+     f_riskCalc(true, riskEntry, longStopRaw, longTargetRaw, atrValue, i_riskAtrBufferMult, i_maxStopDistancePct, i_minRR)
+[shortStopLevel, shortTargetLevel, shortStopDist, shortRewardDist, shortRR, shortStatus] =
+     f_riskCalc(false, riskEntry, shortStopRaw, shortTargetRaw, atrValue, i_riskAtrBufferMult, i_maxStopDistancePct, i_minRR)
+
+[longRiskAmount, longPosSize, longNotional, longMargin] = f_positionSize(i_accountEquity, i_riskPctPerTrade, longStopDist, riskEntry, i_leverage)
+[shortRiskAmount, shortPosSize, shortNotional, shortMargin] = f_positionSize(i_accountEquity, i_riskPctPerTrade, shortStopDist, riskEntry, i_leverage)
+
+riskLongText  = f_riskLine(longStopLevel, longTargetLevel, longRR, longStatus)
+riskShortText = f_riskLine(shortStopLevel, shortTargetLevel, shortRR, shortStatus)
+
+posSizeLongText  = f_posSizeLine(longPosSize, longNotional, longMargin)
+posSizeShortText = f_posSizeLine(shortPosSize, shortNotional, shortMargin)
+posSizeCompactText = "L " + (na(longPosSize) ? "N/A" : str.tostring(longPosSize, "#.####")) + " / S " + (na(shortPosSize) ? "N/A" : str.tostring(shortPosSize, "#.####")) + " BTC"
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -1356,7 +1512,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 15 : 36, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 18 : 40, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -1415,8 +1571,17 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
          text_color = mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 14, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 14, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 14, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 14, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 15, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 15, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 16, "POSITION SIZE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 16, posSizeCompactText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 17, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 17, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -1550,8 +1715,20 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
          text_color = mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 35, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 35, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 35, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 35, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 36, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 36, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 37, "POSITION SIZE (LONG)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 37, posSizeLongText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 38, "POSITION SIZE (SHORT)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 38, posSizeShortText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 39, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 39, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
