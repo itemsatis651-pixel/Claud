@@ -2,7 +2,7 @@
 
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
-// PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C, part 1 (Structure)
+// PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones)
 // — built incrementally, one module at a time, each confirmed working before
 // the next is added (Madde 122).
 //
@@ -13,42 +13,46 @@
 //      — confirmed working by user (TRANSITION/LOW confidence in a chop zone;
 //      persistence/hysteresis held through Replay without flip-flopping).
 //   3. MARKET STRUCTURE — CENTRAL CONFIRMED-SWING FUNCTION + HH/HL/LH/LL +
-//      BOS/CHoCH (Madde 14, 61) — next module per the master hierarchy
-//      (Madde 4: DATA GATE -> MARKET REGIME -> MARKET STRUCTURE). This is the
-//      ONE central swing-detection function every later module (Zone,
-//      Fibonacci, Wyckoff/Elliott Proxy) must reference (Madde 14 v3.1 EK) —
-//      none of them may invent their own pivot logic. A separate "Dow" module
-//      was intentionally NOT added: Madde 61 states Dow is redundant with
-//      Structure, so building it twice would just double-count the same
-//      evidence family (Madde 6).
+//      BOS/CHoCH (Madde 14, 61) — confirmed working by user, including that
+//      swing markers only appear ~pivotRight bars after the fact (KNOWN_TIME
+//      vs SWING_TIME, Madde 14) and are stable across reload/replay (no repaint).
+//   4. SUPPORT/RESISTANCE ZONE ENGINE + CLUSTERING (Madde 15, 16) — next module
+//      per the master hierarchy (Madde 4 groups this stage as "LOCATION /
+//      ZONE", directly after MARKET STRUCTURE). Zones are built EXCLUSIVELY
+//      from the central confirmed-swing function above (Madde 14 v3.1 EK) —
+//      no separate pivot logic was invented here. Zone body = wick-to-body of
+//      the swing's own candle (no arbitrary ATR-width guess). Nearby zones are
+//      merged using ATR-relative distance (Madde 16); broken zones are flagged,
+//      not deleted; freshness degrades with age and with repeated touches
+//      ("exhausted", Madde 16).
 //
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
-//   - Support/Resistance zones (Madde 15-16), Fibonacci (Madde 17), and the
-//     full breakout/retest state machine (Madde 20-21) — these are the next
-//     items in Phase C but are separate modules from basic Structure.
-//   - Regime Confidence's "structure agreement" factor (Madde 11) is NOT
-//     wired up yet even though Structure now exists — that integration is
-//     deferred to its own reviewable step rather than silently folded in here.
+//   - Fibonacci (Madde 17) and the full breakout/retest state machine (Madde
+//     20-21) — next items in Phase C, separate modules from Zones.
+//   - Full REACTION QUALITY per touch (needs Price Action + Participation/
+//     volume evidence, Phase D) and HTF_IMPORTANCE (needs MTF, Phase E) are
+//     NOT computed — Zone exposes freshness/touch-count/EMA-confluence only,
+//     not a fabricated single "quality score".
+//   - Regime Confidence's "structure agreement" factor (Madde 11) still NOT
+//     wired up, same as before — deferred to its own reviewable step.
 //   - Full Evidence Family aggregation / family caps (Madde 42) — deferred
-//     until scoring/normalization (Madde 41) exists. The EvidenceFamily enum
-//     below is declared now only to document which family each module's
-//     output belongs to.
-//   - MTF (no request.* calls anywhere in this file — request budget 0/40,
-//     Madde 110), Compact panel (Madde 114), Alert engine (Madde 116-117),
-//     Location/Setup/Trigger/Risk/Veto/Decision engines, WATCH/SETUP/... state
-//     transitions (state machine still only reaches DATA_INVALID/FLAT).
+//     until scoring/normalization (Madde 41) exists.
+//   - MTF (request budget still 0/40, Madde 110), Compact panel (Madde 114),
+//     Alert engine (Madde 116-117), Setup/Trigger/Risk/Veto/Decision engines,
+//     WATCH/SETUP/... state transitions (state machine still only reaches
+//     DATA_INVALID/FLAT — Setup Classifier, which would unlock WATCH, does
+//     not exist yet).
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
-// `barsInRegime`, and all Structure state (swings, bias, BOS/CHoCH) only ever
-// advance on barstate.isconfirmed. Pivot detection itself (ta.pivothigh/low)
-// is called unconditionally every bar (required for correct internal ta.*
-// history tracking) — only the resulting STATE UPDATE is confirmed-gated.
+// `barsInRegime`, Structure state, and all Zone state only ever advance on
+// barstate.isconfirmed. ta.* functions (pivots, crossover/crossunder) are
+// called unconditionally every bar; only the resulting STATE UPDATE is gated.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure", shorttitle = "BTC-PRO-ABC", overlay = true, max_labels_count = 200)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A/B/C: Data Gate + Regime + Structure + Zones", shorttitle = "BTC-PRO-ABCD", overlay = true, max_labels_count = 200, max_boxes_count = 50)
 
-var string ENGINE_VERSION = "v0.3.0-phaseC-structure"
+var string ENGINE_VERSION = "v0.4.0-phaseC-zones"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -86,8 +90,9 @@ var EngineState currentState = EngineState.DATA_INVALID
 // No scoring/aggregation engine exists yet; this enum exists so each module's
 // output can be explicitly tagged with the family it belongs to as it is
 // built, instead of retrofitting the taxonomy later.
-// Producers so far: CONTEXT_REGIME + VOLATILITY (Market Regime module),
-// STRUCTURE (this module, also standing in for "Dow" per Madde 61).
+// Producers so far: CONTEXT_REGIME + VOLATILITY (Market Regime), STRUCTURE
+// (also standing in for "Dow" per Madde 61), LOCATION (this Zone module —
+// Madde 4 names the combined hierarchy stage "LOCATION / ZONE").
 // -----------------------------------------------------------------------------
 enum EvidenceFamily
     CONTEXT_REGIME
@@ -190,6 +195,93 @@ f_structEventLabel(StructureEvent e) =>
         =>                            "NONE"
 
 // -----------------------------------------------------------------------------
+// SUPPORT/RESISTANCE ZONE TYPE + HELPERS (Madde 15, 16) — built ONLY on top of
+// the central confirmed-swing function; no separate pivot logic here. All
+// helpers take their thresholds as explicit parameters (never read inputs or
+// later-declared globals directly) so they stay safe to define this early.
+// -----------------------------------------------------------------------------
+type Zone
+    float zoneHigh
+    float zoneLow
+    int   createdBar    // SWING_TIME of the swing that created/last extended it
+    int   knownBar      // KNOWN_TIME the zone (or its last merge) became known
+    int   lastTouchBar
+    int   touchCount
+    bool  broken
+    int   brokenBar
+
+f_upsertZone(array<Zone> zones, float zHigh, float zLow, int swingBar, int knownBar, float atrVal, float clusterMult, int maxZones) =>
+    float newCenter = (zHigh + zLow) / 2
+    int mergedIndex = -1
+    if atrVal > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                float zCenter = (z.zoneHigh + z.zoneLow) / 2
+                if math.abs(newCenter - zCenter) <= atrVal * clusterMult
+                    mergedIndex := i
+                    break
+    if mergedIndex >= 0
+        Zone existing = array.get(zones, mergedIndex)
+        existing.zoneHigh := math.max(existing.zoneHigh, zHigh)
+        existing.zoneLow  := math.min(existing.zoneLow, zLow)
+        existing.touchCount := existing.touchCount + 1
+        existing.lastTouchBar := knownBar
+    else
+        Zone newZone = Zone.new(zoneHigh = zHigh, zoneLow = zLow, createdBar = swingBar, knownBar = knownBar, lastTouchBar = knownBar, touchCount = 1, broken = false, brokenBar = na)
+        array.push(zones, newZone)
+        if array.size(zones) > maxZones
+            array.remove(zones, 0)
+    true
+
+f_updateZones(array<Zone> zones, bool isResistance, float barHigh, float barLow, float barClose, int curBar) =>
+    for i = 0 to array.size(zones) - 1
+        Zone z = array.get(zones, i)
+        if not z.broken
+            bool touched = barHigh >= z.zoneLow and barLow <= z.zoneHigh
+            if touched and z.lastTouchBar != curBar
+                z.touchCount := z.touchCount + 1
+                z.lastTouchBar := curBar
+            if isResistance and barClose > z.zoneHigh
+                z.broken := true
+                z.brokenBar := curBar
+            if not isResistance and barClose < z.zoneLow
+                z.broken := true
+                z.brokenBar := curBar
+    true
+
+f_nearestZone(array<Zone> zones, float refPrice) =>
+    float bestDist = na
+    int bestIdx = -1
+    for i = 0 to array.size(zones) - 1
+        Zone z = array.get(zones, i)
+        if not z.broken
+            float center = (z.zoneHigh + z.zoneLow) / 2
+            float dist = math.abs(refPrice - center)
+            if na(bestDist) or dist < bestDist
+                bestDist := dist
+                bestIdx := i
+    bestIdx
+
+f_zoneFreshness(Zone z, int curBar, int freshAgeBars, int staleAgeBars, int exhaustTouches) =>
+    age = curBar - z.createdBar
+    z.touchCount >= exhaustTouches ? "EXHAUSTED" : age > staleAgeBars ? "STALE" : age <= freshAgeBars ? "FRESH" : "AGING"
+
+f_emaConfluence(Zone z, float ef, float em, float es, float atrVal, float mult) =>
+    float lo = z.zoneLow - atrVal * mult
+    float hi = z.zoneHigh + atrVal * mult
+    (ef >= lo and ef <= hi) or (em >= lo and em <= hi) or (es >= lo and es <= hi)
+
+f_zoneSummary(array<Zone> zones, int idx, float ef, float em, float es, float atrVal, float confMult, int curBar, int freshAge, int staleAge, int exhaustN) =>
+    string result = "NONE"
+    if idx >= 0
+        Zone z = array.get(zones, idx)
+        string fresh = f_zoneFreshness(z, curBar, freshAge, staleAge, exhaustN)
+        bool conf = f_emaConfluence(z, ef, em, es, atrVal, confMult)
+        result := fresh + "  " + str.tostring(z.zoneLow) + "-" + str.tostring(z.zoneHigh) + " (" + str.tostring(z.touchCount) + "x)" + (conf ? " EMA" : "")
+    result
+
+// -----------------------------------------------------------------------------
 // INPUTS — DATA GATE
 // -----------------------------------------------------------------------------
 grpSymbol = "Data Gate — Symbol & Source Validation"
@@ -240,6 +332,20 @@ i_pivotLeft  = input.int(5, "Pivot Left Bars", minval = 1, group = grpStructure)
 i_pivotRight = input.int(5, "Pivot Right Bars", minval = 1, group = grpStructure,
      tooltip = "Bir swing yalnızca sağında bu kadar bar oluştuktan sonra 'bilinir' (KNOWN_TIME != SWING_TIME, Madde 14). Repaint yok.")
 i_showStructureMarks = input.bool(true, "Show Swing/BOS/CHoCH Markers", group = grpStructure)
+
+// -----------------------------------------------------------------------------
+// INPUTS — SUPPORT/RESISTANCE ZONES (Madde 15, 16)
+// -----------------------------------------------------------------------------
+grpZone = "Support/Resistance Zones"
+i_maxZonesPerSide = input.int(6, "Max Zones per Side", minval = 1, maxval = 20, group = grpZone)
+i_clusterAtrMult = input.float(1.0, "Cluster Merge Distance (x ATR)", minval = 0.1, group = grpZone,
+     tooltip = "Madde 16 — yakın seviyeler tek zone'a birleştirilir, yüzlerce ayrı çizgi oluşmaz.")
+i_freshAgeBars = input.int(20, "Fresh Zone Age Ceiling (bars)", minval = 1, group = grpZone)
+i_staleAgeBars = input.int(150, "Stale Zone Age Floor (bars)", minval = 1, group = grpZone)
+i_exhaustTouches = input.int(4, "Exhausted After N Touches", minval = 1, group = grpZone,
+     tooltip = "Madde 16 — touch sayısı tek başına kalite değildir; çok test edilen zone exhausted sayılır.")
+i_emaConfluenceAtrMult = input.float(0.5, "EMA Confluence Distance (x ATR)", minval = 0.05, group = grpZone)
+i_showZones = input.bool(true, "Show Zones on Chart", group = grpZone)
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -304,12 +410,12 @@ if barstate.isconfirmed
     // else: currentState is FLAT (or, once later phases exist, a state those
     // modules manage) and data remains valid — nothing to do here. WATCH/SETUP/
     // ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT/IN_POSITION/EXIT/COOLDOWN
-    // transitions are added when Location/Setup/Trigger/Risk/Veto/Decision
-    // modules exist (Phase C+/F onward).
+    // transitions are added when Setup/Trigger/Risk/Veto/Decision modules
+    // exist (Phase C+/F onward).
 
 // -----------------------------------------------------------------------------
-// MARKET REGIME — TREND (Madde 10, 13). Structure exists now (below) but is
-// NOT yet wired into Regime Confidence — see header note.
+// MARKET REGIME — TREND (Madde 10, 13). Structure/Zone exist now (below) but
+// are NOT yet wired into Regime Confidence — see header note.
 // -----------------------------------------------------------------------------
 emaFast = ta.ema(close, i_emaFastLen)
 emaMid  = ta.ema(close, i_emaMidLen)
@@ -406,6 +512,11 @@ var StructureBias structureBias = StructureBias.NEUTRAL
 var StructureEvent lastStructureEvent = StructureEvent.NONE
 var int lastStructureEventBar = na
 
+// Zone stores (Madde 15, 16) — resistance from confirmed swing highs, support
+// from confirmed swing lows.
+var array<Zone> resistanceZones = array.new<Zone>()
+var array<Zone> supportZones    = array.new<Zone>()
+
 // Break-of-level checks against the most recently CONFIRMED swing levels.
 // Called UNCONDITIONALLY every bar (ta.crossover/crossunder must not be
 // called inside an `if` — Madde 124 syntax/logic QA); only the resulting
@@ -420,12 +531,16 @@ chochDownEvent = false
 
 if barstate.isconfirmed
     // 1) Register new confirmed swings (Madde 14 — KNOWN_TIME vs SWING_TIME)
+    //    and create/cluster the corresponding zone (Madde 15, 16). Zone body
+    //    is the swing candle's wick-to-body span — no arbitrary ATR guess.
     if not na(pivotHighPrice)
         prevSwingHighPrice := lastSwingHighPrice
         lastHighLabel := na(prevSwingHighPrice) ? SwingLabel.NONE : (pivotHighPrice > prevSwingHighPrice ? SwingLabel.HH : SwingLabel.LH)
         lastSwingHighPrice := pivotHighPrice
         lastSwingHighSwingBar := bar_index - i_pivotRight
         lastSwingHighKnownBar := bar_index
+        zoneLowBoundHigh = math.max(open[i_pivotRight], close[i_pivotRight])
+        f_upsertZone(resistanceZones, pivotHighPrice, zoneLowBoundHigh, bar_index - i_pivotRight, bar_index, atrValue, i_clusterAtrMult, i_maxZonesPerSide)
 
     if not na(pivotLowPrice)
         prevSwingLowPrice := lastSwingLowPrice
@@ -433,6 +548,8 @@ if barstate.isconfirmed
         lastSwingLowPrice := pivotLowPrice
         lastSwingLowSwingBar := bar_index - i_pivotRight
         lastSwingLowKnownBar := bar_index
+        zoneHighBoundLow = math.min(open[i_pivotRight], close[i_pivotRight])
+        f_upsertZone(supportZones, zoneHighBoundLow, pivotLowPrice, bar_index - i_pivotRight, bar_index, atrValue, i_clusterAtrMult, i_maxZonesPerSide)
 
     // 2) BOS / CHoCH — break of a previously CONFIRMED swing level (Madde 14, 61).
     // First break after NEUTRAL establishes initial bias (treated as CHoCH);
@@ -458,9 +575,20 @@ if barstate.isconfirmed
             lastStructureEvent := StructureEvent.CHOCH_DOWN
         lastStructureEventBar := bar_index
 
+    // 3) Ongoing touch-count / broken-status maintenance for ALL existing
+    //    zones, every confirmed bar (Madde 15, 16) — independent of whether
+    //    a new swing formed this bar.
+    f_updateZones(resistanceZones, true, high, low, close, bar_index)
+    f_updateZones(supportZones, false, high, low, close, bar_index)
+
 swingHighAgeText = na(lastSwingHighSwingBar) ? "N/A" : str.tostring(bar_index - lastSwingHighSwingBar) + " bars ago"
 swingLowAgeText  = na(lastSwingLowSwingBar) ? "N/A" : str.tostring(bar_index - lastSwingLowSwingBar) + " bars ago"
 lastEventAgeText = na(lastStructureEventBar) ? "" : " (" + str.tostring(bar_index - lastStructureEventBar) + " bars ago)"
+
+nearestResIdx = f_nearestZone(resistanceZones, close)
+nearestSupIdx = f_nearestZone(supportZones, close)
+resZoneText = f_zoneSummary(resistanceZones, nearestResIdx, emaFast, emaMid, emaSlow, atrValue, i_emaConfluenceAtrMult, bar_index, i_freshAgeBars, i_staleAgeBars, i_exhaustTouches)
+supZoneText = f_zoneSummary(supportZones, nearestSupIdx, emaFast, emaMid, emaSlow, atrValue, i_emaConfluenceAtrMult, bar_index, i_freshAgeBars, i_staleAgeBars, i_exhaustTouches)
 
 // -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
@@ -488,7 +616,7 @@ if staleDataDetected
     array.push(reasons, "STALE FEED")
 reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
-var table debugTable = table.new(position.top_right, 2, 21, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, 24, border_width = 1)
 
 if i_showDebug and barstate.islast
     table.cell(debugTable, 0, 0, "ENGINE", text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -567,8 +695,17 @@ if i_showDebug and barstate.islast
                        lastStructureEvent == StructureEvent.BOS_DOWN or lastStructureEvent == StructureEvent.CHOCH_DOWN ? color.red : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 20, "REQUEST BUDGET", text_halign = text.align_left)
-    table.cell(debugTable, 1, 20, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 20, "ZONES (R/S)", text_halign = text.align_left)
+    table.cell(debugTable, 1, 20, str.tostring(array.size(resistanceZones)) + " / " + str.tostring(array.size(supportZones)), text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 21, "NEAREST RESISTANCE", text_halign = text.align_left)
+    table.cell(debugTable, 1, 21, resZoneText, text_color = resZoneText == "NONE" ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 22, "NEAREST SUPPORT", text_halign = text.align_left)
+    table.cell(debugTable, 1, 22, supZoneText, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 23, "REQUEST BUDGET", text_halign = text.align_left)
+    table.cell(debugTable, 1, 23, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -590,3 +727,26 @@ if i_showStructureMarks and barstate.isconfirmed and (bosUpEvent or chochUpEvent
 if i_showStructureMarks and barstate.isconfirmed and (bosDownEvent or chochDownEvent)
     label.new(bar_index, low, bosDownEvent ? "BOS" : "CHoCH", style = label.style_label_up,
          color = bosDownEvent ? color.new(color.red, 0) : color.new(color.orange, 0), textcolor = color.white, size = size.tiny)
+
+var array<box> zoneBoxes = array.new<box>()
+
+if i_showZones and barstate.islast
+    for i = 0 to array.size(zoneBoxes) - 1
+        box.delete(array.get(zoneBoxes, i))
+    array.clear(zoneBoxes)
+
+    for i = 0 to array.size(resistanceZones) - 1
+        Zone z = array.get(resistanceZones, i)
+        bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
+             border_color = z.broken ? color.new(color.red, 70) : color.red,
+             bgcolor = z.broken ? color.new(color.red, 95) : color.new(color.red, 85),
+             border_style = z.broken ? line.style_dashed : line.style_solid)
+        array.push(zoneBoxes, bx)
+
+    for i = 0 to array.size(supportZones) - 1
+        Zone z = array.get(supportZones, i)
+        bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
+             border_color = z.broken ? color.new(color.lime, 70) : color.lime,
+             bgcolor = z.broken ? color.new(color.lime, 95) : color.new(color.lime, 85),
+             border_style = z.broken ? line.style_dashed : line.style_solid)
+        array.push(zoneBoxes, bx)
