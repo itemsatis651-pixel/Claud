@@ -3,9 +3,9 @@
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
 // PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones +
-// Fibonacci + Breakout/Retest FSM) + PHASE D, parts 1-2 (Price Action +
-// Momentum) — built incrementally, one module at a time, each confirmed
-// working before the next is added (Madde 122).
+// Fibonacci + Breakout/Retest FSM) + PHASE D (Price Action + Momentum +
+// Participation) — built incrementally, one module at a time, each
+// confirmed working before the next is added (Madde 122).
 //
 // MODULES INCLUDED SO FAR:
 //   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
@@ -71,14 +71,31 @@
 //      LL-vs-higher-RSI. Reported as DIVERGENCE DETECTED, never as a
 //      guaranteed reversal (Madde 23). Tagged EvidenceFamily.MOMENTUM.
 //
+//   9. PARTICIPATION ENGINE (Madde 24) — third and last Phase D item, so
+//      Phase D is now complete per the Madde 121 roadmap. Uses RVOL
+//      (volume / N-bar average) + OBV slope alignment with price direction
+//      only, NOT every volume-flavored indicator Madde 24 casually lists —
+//      OBV, price-volume alignment and breakout volume all measure closely
+//      related information, so piling them on would double-count within this
+//      one PARTICIPATION family (Madde 6). VWAP is a FIXED N-bar ROLLING
+//      average (sum(close*volume)/sum(volume) over N bars via ta.sma ratio),
+//      deliberately NOT TradingView's session-anchored ta.vwap — Madde 24
+//      explicitly warns that BTC is 24/7, so no exchange "session open"
+//      concept is assumed (consistent with Madde 1/107's BIST-session ban).
+//      STATE label (NORMAL/EXPANDING/CONTRACTING/CONFIRMING/DIVERGING) from
+//      RVOL magnitude x OBV/price alignment. Tagged
+//      EvidenceFamily.PARTICIPATION. BACKLOG (per user, not built): zone
+//      "polarity flip" (a broken resistance zone re-evaluated as a support
+//      candidate) — deliberately not in Madde 15-16's spec, revisit when
+//      Location/Zone Quality (Madde 62-63) or the Setup Classifier is built,
+//      where its actual effect can be measured (Madde 111).
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
-//   - Participation refinement (Madde 121 Phase D) — the remaining Phase D
-//     item, a separate module from Price Action/Momentum.
-//   - Full REACTION QUALITY per touch (needs Price Action + Participation/
-//     volume evidence — Price Action now exists but Participation/volume
-//     still doesn't) and HTF_IMPORTANCE (needs MTF, Phase E) are NOT
-//     computed — Zone exposes freshness/touch-count/EMA-confluence only,
-//     not a fabricated single "quality score". Same restraint applies to the
+//   - Full REACTION QUALITY per touch (needs Price Action + Participation
+//     evidence — both now exist, but no scoring engine combines them yet,
+//     Madde 41) and HTF_IMPORTANCE (needs MTF, Phase E) are NOT computed —
+//     Zone exposes freshness/touch-count/EMA-confluence only, not a
+//     fabricated single "quality score". Same restraint applies to the
 //     Breakout FSM's displacement/retest checks (Structure-family only).
 //   - Regime Confidence's "structure agreement" factor (Madde 11) still NOT
 //     wired up, same as before — deferred to its own reviewable step.
@@ -88,7 +105,8 @@
 //     Alert engine (Madde 116-117), Setup/Trigger/Risk/Veto/Decision engines,
 //     WATCH/SETUP/... state transitions (state machine still only reaches
 //     DATA_INVALID/FLAT — Setup Classifier, which would unlock WATCH, does
-//     not exist yet). Phase C is complete per the Madde 121 roadmap.
+//     not exist yet). Phase C AND Phase D are now complete per the Madde 121
+//     roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -109,9 +127,9 @@
 // check before entering the `for`.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A-D: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM + Price Action + Momentum", shorttitle = "BTC-PRO-ABCDEFGH", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A-D: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM + Price Action + Momentum + Participation", shorttitle = "BTC-PRO-ABCDEFGHI", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
 
-var string ENGINE_VERSION = "v0.8.0-phaseD-momentum"
+var string ENGINE_VERSION = "v0.9.0-phaseD-participation"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -157,9 +175,10 @@ var EngineState currentState = EngineState.DATA_INVALID
 // Fibonacci "location evidence", so it shares the SAME family as Zone rather
 // than getting its own), TRIGGER (Price Action module — Madde 64 lists
 // "rejection"/"reclaim"/"close confirmation" as trigger examples, which is
-// exactly what Price Action's patterns are), MOMENTUM (this module — RSI +
-// MACD histogram only, not also Stochastic/CCI, to avoid double-counting
-// within this same family, Madde 6).
+// exactly what Price Action's patterns are), MOMENTUM (RSI + MACD histogram
+// only, not also Stochastic/CCI, to avoid double-counting within this same
+// family, Madde 6), PARTICIPATION (this module — RVOL + OBV alignment only,
+// same double-counting reasoning applied to volume-flavored indicators).
 // -----------------------------------------------------------------------------
 enum EvidenceFamily
     CONTEXT_REGIME
@@ -344,6 +363,35 @@ f_divergenceLabel(DivergenceType d) =>
         DivergenceType.BULLISH => "BULLISH DIVERGENCE"
         DivergenceType.BEARISH => "BEARISH DIVERGENCE"
         =>                          "NONE"
+
+// -----------------------------------------------------------------------------
+// PARTICIPATION ENUMS (Madde 24)
+// -----------------------------------------------------------------------------
+enum ParticipationState
+    NORMAL
+    EXPANDING
+    CONTRACTING
+    CONFIRMING
+    DIVERGING
+
+enum ParticipationDirection
+    NONE
+    BULLISH
+    BEARISH
+
+f_partStateLabel(ParticipationState s) =>
+    switch s
+        ParticipationState.EXPANDING   => "EXPANDING"
+        ParticipationState.CONTRACTING => "CONTRACTING"
+        ParticipationState.CONFIRMING  => "CONFIRMING"
+        ParticipationState.DIVERGING   => "DIVERGING"
+        =>                                 "NORMAL"
+
+f_partDirLabel(ParticipationDirection d) =>
+    switch d
+        ParticipationDirection.BULLISH => "BULLISH"
+        ParticipationDirection.BEARISH => "BEARISH"
+        =>                                 "NONE"
 
 // -----------------------------------------------------------------------------
 // SUPPORT/RESISTANCE ZONE TYPE + HELPERS (Madde 15, 16) — built ONLY on top of
@@ -579,6 +627,18 @@ i_macdSlow = input.int(26, "MACD Slow Length", minval = 1, group = grpMomentum)
 i_macdSignal = input.int(9, "MACD Signal Length", minval = 1, group = grpMomentum)
 i_momSlopeLookback = input.int(3, "Slope Lookback (bars)", minval = 1, group = grpMomentum)
 i_showMomentumMarks = input.bool(true, "Show Divergence Markers", group = grpMomentum)
+
+// -----------------------------------------------------------------------------
+// INPUTS — PARTICIPATION (Madde 24)
+// -----------------------------------------------------------------------------
+grpParticipation = "Participation"
+i_rvolLookback = input.int(20, "RVOL Average Volume Lookback (bars)", minval = 1, group = grpParticipation)
+i_expansionRvolMult = input.float(1.5, "Volume Expansion Threshold (x avg)", minval = 1.0, group = grpParticipation)
+i_contractionRvolMult = input.float(0.5, "Volume Contraction Threshold (x avg)", minval = 0.05, maxval = 1.0, group = grpParticipation)
+i_obvSlopeLookback = input.int(3, "OBV Slope Lookback (bars)", minval = 1, group = grpParticipation)
+i_vwapLookback = input.int(20, "Rolling VWAP Lookback (bars)", minval = 1, group = grpParticipation,
+     tooltip = "N-bar rolling volume-weighted average, NOT session-anchored — Madde 24: BTC 24/7, session-open kavramı yok.")
+i_showParticipationMarks = input.bool(true, "Show Participation Markers / VWAP", group = grpParticipation)
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -1075,6 +1135,62 @@ momentumText = f_momStateLabel(lastMomentumState) + (lastMomentumDir == Momentum
      "  RSI " + (na(lastRsiSnapshot) ? "N/A" : str.tostring(lastRsiSnapshot, "#.#"))
 
 // -----------------------------------------------------------------------------
+// PARTICIPATION ENGINE (Madde 24) — RVOL + OBV alignment only, not every
+// volume-flavored indicator at once (Madde 6). VWAP is a FIXED N-bar rolling
+// average, NOT session-anchored (Madde 24: BTC is 24/7, no session-open
+// concept assumed, consistent with Madde 1/107).
+// -----------------------------------------------------------------------------
+volAvg = ta.sma(volume, i_rvolLookback)
+rvol = volumeValid and not na(volAvg) and volAvg > 0 ? volume / volAvg : na
+rvolExpanding   = not na(rvol) and rvol >= i_expansionRvolMult
+rvolContracting = not na(rvol) and rvol <= i_contractionRvolMult
+
+// OBV built manually from ta.cum/ta.change/math.sign — Pine's ta.* namespace
+// has no bare ta.obv series to call, unlike ta.tr (Madde 127: verify, don't
+// assume). Standard OBV definition: cumulative sum of volume signed by the
+// direction of each bar's close-to-close change.
+obvValue   = ta.cum(volume * math.sign(ta.change(close)))
+obvRising  = obvValue > obvValue[i_obvSlopeLookback]
+obvFalling = obvValue < obvValue[i_obvSlopeLookback]
+
+barBullish = close > open
+barBearish = close < open
+
+alignedBullish = barBullish and obvRising
+alignedBearish = barBearish and obvFalling
+misaligned     = (barBullish and obvFalling) or (barBearish and obvRising)
+
+partDirection = alignedBullish ? ParticipationDirection.BULLISH : alignedBearish ? ParticipationDirection.BEARISH : ParticipationDirection.NONE
+
+partState = rvolExpanding and (alignedBullish or alignedBearish) ? ParticipationState.CONFIRMING :
+     rvolExpanding and misaligned ? ParticipationState.DIVERGING :
+     rvolContracting ? ParticipationState.CONTRACTING :
+     rvolExpanding ? ParticipationState.EXPANDING :
+     ParticipationState.NORMAL
+
+rollingVwapNum = ta.sma(close * volume, i_vwapLookback)
+rollingVwapDen = ta.sma(volume, i_vwapLookback)
+rollingVwap = volumeValid and not na(rollingVwapDen) and rollingVwapDen > 0 ? rollingVwapNum / rollingVwapDen : na
+priceAboveVwap = not na(rollingVwap) and close > rollingVwap
+
+var ParticipationState     lastParticipationState = ParticipationState.NORMAL
+var ParticipationDirection lastParticipationDir   = ParticipationDirection.NONE
+var float                  lastRvol               = na
+var float                  lastVwap               = na
+var bool                   lastPriceAboveVwap      = na
+
+if barstate.isconfirmed
+    lastParticipationState := partState
+    lastParticipationDir := partDirection
+    lastRvol := rvol
+    lastVwap := rollingVwap
+    lastPriceAboveVwap := priceAboveVwap
+
+participationText = f_partStateLabel(lastParticipationState) + (lastParticipationDir == ParticipationDirection.NONE ? "" : " " + f_partDirLabel(lastParticipationDir)) +
+     "  RVOL " + (na(lastRvol) ? "N/A" : str.tostring(lastRvol, "#.##"))
+vwapText = na(lastVwap) ? "N/A" : str.tostring(lastVwap) + (lastPriceAboveVwap ? " (price above)" : " (price below)")
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -1102,7 +1218,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 12 : 32, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 13 : 34, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -1148,8 +1264,13 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
                        lastMomentumState == MomentumState.WEAKENING ? color.orange : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 11, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 11, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 11, "PARTICIPATION", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 11, participationText, text_size = size.tiny,
+         text_color = lastParticipationState == ParticipationState.CONFIRMING ? color.lime : lastParticipationState == ParticipationState.DIVERGING ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 12, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 12, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -1267,8 +1388,16 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 1, 30, divergenceText, text_size = size.tiny,
          text_color = lastDivergence == DivergenceType.NONE ? color.gray : color.fuchsia, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 31, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 31, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 31, "PARTICIPATION", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 31, participationText, text_size = size.tiny,
+         text_color = lastParticipationState == ParticipationState.CONFIRMING ? color.lime : lastParticipationState == ParticipationState.DIVERGING ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 32, "VWAP (rolling)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 32, vwapText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 33, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 33, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -1326,6 +1455,15 @@ if i_showMomentumMarks and barstate.isconfirmed and lastDivergenceBar == bar_ind
     if lastDivergence == DivergenceType.BULLISH
         label.new(lastSwingLowSwingBar, lastSwingLowPrice, "DIV", style = label.style_label_up,
              color = color.new(color.fuchsia, 0), textcolor = color.white, size = size.tiny)
+
+// Participation (Madde 24): rolling VWAP line + a small marker only on
+// CONFIRMING/DIVERGING bars (the two states worth flagging visually).
+plot(i_showParticipationMarks ? rollingVwap : na, "Rolling VWAP", color = color.new(color.yellow, 20), linewidth = 1)
+
+plotshape(i_showParticipationMarks and barstate.isconfirmed and partState == ParticipationState.CONFIRMING,
+     title = "Participation Confirming", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.tiny)
+plotshape(i_showParticipationMarks and barstate.isconfirmed and partState == ParticipationState.DIVERGING,
+     title = "Participation Diverging", style = shape.xcross, location = location.abovebar, color = color.orange, size = size.tiny)
 
 var array<box> zoneBoxes = array.new<box>()
 
