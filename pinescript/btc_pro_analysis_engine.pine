@@ -1,0 +1,224 @@
+//@version=6
+
+// =============================================================================
+// BTC PRO ANALYSIS ENGINE
+// PHASE A — PART 1: DATA GATE + SYMBOL/DATA VALIDATION + STATE MACHINE SKELETON
+//
+// Scope of THIS file (per master prompt Madde 121 Phase A, first slice):
+//   - Data Gate (Madde 7): OHLC / volume / history / ATR / gap / abnormal bar /
+//     stale-feed checks. NA is never treated as 0 or as bullish/bearish evidence.
+//   - Symbol & data source validation (Madde 1, 8): exchange/base/quote check,
+//     spot-vs-perpetual is only ever reported as a best-effort guess, never
+//     assumed silently (Madde 139/140).
+//   - State machine SKELETON (Madde 55): the full internal state enum exists,
+//     but only DATA_INVALID <-> FLAT transitions are implemented. WATCH / SETUP /
+//     ENTRY_PENDING / CONFIRMED_LONG / CONFIRMED_SHORT / IN_POSITION / EXIT /
+//     COOLDOWN are declared for forward compatibility only and are NOT reachable
+//     yet — they will be wired up as Regime/Structure/Setup/Trigger/Risk/Veto
+//     modules are added in later phases.
+//
+// Explicitly OUT of scope for this file (deferred to later phases/modules):
+//   - Compact panel (Madde 114), alert engine (Madde 116-117), regime/structure/
+//     location/setup/trigger/confirmation/risk/veto/score engines, MTF (no
+//     request.* calls are used here at all, so the Madde 110 request budget is
+//     currently 0/40).
+//   - The small table below is a temporary DIAGNOSTIC aid to verify the data
+//     gate is working; it is not the Madde 114 panel and will be replaced.
+//
+// Non-repaint policy (Madde 33-34): all gate checks are computed every tick for
+// live diagnostics (clearly marked LIVE), but the authoritative `currentState`
+// only advances on barstate.isconfirmed, so historical state never repaints.
+// =============================================================================
+
+indicator("BTC PRO ANALYSIS ENGINE — Phase A: Data Gate", shorttitle = "BTC-PRO-A", overlay = true)
+
+var string ENGINE_VERSION = "v0.1.0-phaseA"
+
+// -----------------------------------------------------------------------------
+// STATE MACHINE SKELETON (Madde 55)
+// -----------------------------------------------------------------------------
+enum EngineState
+    DATA_INVALID
+    FLAT
+    WATCH
+    SETUP
+    ENTRY_PENDING
+    CONFIRMED_LONG
+    CONFIRMED_SHORT
+    IN_POSITION
+    EXIT
+    COOLDOWN
+
+f_stateLabel(EngineState s) =>
+    switch s
+        EngineState.DATA_INVALID   => "DATA_INVALID"
+        EngineState.FLAT           => "FLAT"
+        EngineState.WATCH          => "WATCH"
+        EngineState.SETUP          => "SETUP"
+        EngineState.ENTRY_PENDING  => "ENTRY_PENDING"
+        EngineState.CONFIRMED_LONG => "CONFIRMED_LONG"
+        EngineState.CONFIRMED_SHORT => "CONFIRMED_SHORT"
+        EngineState.IN_POSITION    => "IN_POSITION"
+        EngineState.EXIT           => "EXIT"
+        EngineState.COOLDOWN       => "COOLDOWN"
+        =>                             "UNKNOWN"
+
+var EngineState currentState = EngineState.DATA_INVALID
+
+// -----------------------------------------------------------------------------
+// INPUTS
+// -----------------------------------------------------------------------------
+grpSymbol = "Data Gate — Symbol & Source Validation"
+i_expectedExchange = input.string("OKX", "Expected Exchange (syminfo.prefix)", group = grpSymbol,
+     tooltip = "Uyuşmazsa DATA SOURCE WARNING üretilir (soft) — sistem otomatik durdurulmaz.")
+i_expectedBase  = input.string("BTC",  "Expected Base Currency",  group = grpSymbol,
+     tooltip = "Uyuşmazsa DATA INVALID üretilir (hard) — bu sistem yalnızca BTC içindir.")
+i_expectedQuote = input.string("USDT", "Expected Quote Currency", group = grpSymbol)
+
+grpGate = "Data Gate — Thresholds"
+i_minBars = input.int(210, "Minimum Required Historical Bars", minval = 1, group = grpGate,
+     tooltip = "Sonraki fazlarda (örn. EMA200) kullanılacak göstergeler için ayrılmış güvenlik payı.")
+i_gapMult = input.float(3.0, "Data Gap Multiplier (x expected bar interval)", minval = 1.1, group = grpGate)
+i_abnormalAtrMult = input.float(8.0, "Abnormal Bar Range Multiplier (x ATR14)", minval = 1.0, group = grpGate)
+i_staleBarsThreshold = input.int(10, "Stale Feed — Consecutive Identical Bars", minval = 2, group = grpGate)
+
+grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
+i_showDebug = input.bool(true, "Show Data Gate Diagnostics Table", group = grpDebug)
+i_showBg    = input.bool(true, "Highlight DATA_INVALID bars", group = grpDebug)
+
+// -----------------------------------------------------------------------------
+// SYMBOL / DATA SOURCE VALIDATION (Madde 1, 8)
+// -----------------------------------------------------------------------------
+exchangeOK   = str.upper(syminfo.prefix)      == str.upper(i_expectedExchange)
+baseOK       = str.upper(syminfo.basecurrency) == str.upper(i_expectedBase)
+quoteOK      = str.upper(syminfo.currency)     == str.upper(i_expectedQuote)
+instrumentOK = baseOK and quoteOK   // hard: wrong instrument entirely (not BTC/USDT)
+
+// Spot vs perpetual: never asserted with false confidence (Madde 1, 127, 139, 140).
+tickerUpper     = str.upper(syminfo.ticker)
+isPerpByType    = syminfo.type == "swap"
+isPerpByTicker  = str.contains(tickerUpper, ".P") or str.contains(tickerUpper, "SWAP") or str.contains(tickerUpper, "PERP")
+isSpotByType    = syminfo.type == "spot" or syminfo.type == "crypto"
+marketTypeGuess = isPerpByType or isPerpByTicker ? "PERPETUAL (heuristic — verify)" :
+                   isSpotByType and not isPerpByTicker ? "SPOT (heuristic — verify)" :
+                   "UNKNOWN — VERIFY MANUALLY"
+
+// -----------------------------------------------------------------------------
+// DATA GATE CHECKS (Madde 7) — computed every tick for live diagnostics
+// -----------------------------------------------------------------------------
+ohlcValid = not na(open) and not na(high) and not na(low) and not na(close) and
+             high >= low and high >= open and high >= close and low <= open and low <= close
+
+volumeValid = not na(volume)   // NA stays NA — never silently treated as 0 (Madde 7)
+
+sufficientHistory = bar_index >= (i_minBars - 1)
+
+atrValue = ta.atr(14)
+atrValid = not na(atrValue) and atrValue > 0
+
+expectedIntervalMs = timeframe.in_seconds() * 1000
+chartTypeOK = not na(expectedIntervalMs) and expectedIntervalMs > 0
+dataGapDetected = chartTypeOK and bar_index > 0 and not na(time[1]) and
+     (time - time[1]) > expectedIntervalMs * i_gapMult
+
+barRange = high - low
+abnormalBar = atrValid and barRange > atrValue * i_abnormalAtrMult
+
+var int staleBars = 0
+if barstate.isconfirmed
+    isStaleRepeat = bar_index > 0 and open == open[1] and high == high[1] and low == low[1] and close == close[1]
+    staleBars := isStaleRepeat ? staleBars + 1 : 0
+staleDataDetected = staleBars >= i_staleBarsThreshold
+
+// Aggregate — LIVE (not yet confirmed, for immediate diagnostics only; Madde 34)
+liveDataValid = instrumentOK and ohlcValid and volumeValid and sufficientHistory and
+     atrValid and not dataGapDetected and not abnormalBar and not staleDataDetected
+
+// -----------------------------------------------------------------------------
+// STATE TRANSITION — CONFIRMED BAR ONLY (Madde 33-34, non-repainting standard)
+// -----------------------------------------------------------------------------
+if barstate.isconfirmed
+    if not liveDataValid
+        currentState := EngineState.DATA_INVALID
+    else if currentState == EngineState.DATA_INVALID
+        currentState := EngineState.FLAT
+    // else: currentState is FLAT (or, once later phases exist, a state those
+    // modules manage) and data remains valid — nothing to do here. WATCH/SETUP/
+    // ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT/IN_POSITION/EXIT/COOLDOWN
+    // transitions are added when Regime/Structure/Setup/Trigger/Risk/Veto
+    // modules exist (Phase B onward).
+
+// -----------------------------------------------------------------------------
+// DIAGNOSTICS (temporary — NOT the Madde 114 panel)
+// -----------------------------------------------------------------------------
+reasons = array.new<string>()
+if not instrumentOK
+    array.push(reasons, "INSTRUMENT MISMATCH")
+if not exchangeOK
+    array.push(reasons, "EXCHANGE WARNING")
+if not ohlcValid
+    array.push(reasons, "OHLC INVALID")
+if not volumeValid
+    array.push(reasons, "VOLUME NA")
+if not sufficientHistory
+    array.push(reasons, "INSUFFICIENT HISTORY")
+if not atrValid
+    array.push(reasons, "ATR UNAVAILABLE")
+if not chartTypeOK
+    array.push(reasons, "NON-TIME-BASED CHART (GAP CHECK DISABLED)")
+if dataGapDetected
+    array.push(reasons, "DATA GAP")
+if abnormalBar
+    array.push(reasons, "ABNORMAL BAR")
+if staleDataDetected
+    array.push(reasons, "STALE FEED")
+reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
+
+var table debugTable = table.new(position.top_right, 2, 13, border_width = 1)
+
+if i_showDebug and barstate.islast
+    table.cell(debugTable, 0, 0, "ENGINE", text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    table.cell(debugTable, 1, 0, ENGINE_VERSION, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 1, "STATE", text_halign = text.align_left)
+    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_color = currentState == EngineState.DATA_INVALID ? color.red : color.lime, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 2, "DATA GATE (live)", text_halign = text.align_left)
+    table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 3, "SYMBOL", text_halign = text.align_left)
+    table.cell(debugTable, 1, 3, syminfo.tickerid, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 4, "EXCHANGE", text_halign = text.align_left)
+    table.cell(debugTable, 1, 4, syminfo.prefix + (exchangeOK ? "" : " (expected " + i_expectedExchange + ")"), text_color = exchangeOK ? color.gray : color.orange, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 5, "INSTRUMENT", text_halign = text.align_left)
+    table.cell(debugTable, 1, 5, syminfo.basecurrency + "/" + syminfo.currency, text_color = instrumentOK ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 6, "MARKET TYPE", text_halign = text.align_left)
+    table.cell(debugTable, 1, 6, marketTypeGuess, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 7, "BARS", text_halign = text.align_left)
+    table.cell(debugTable, 1, 7, str.tostring(bar_index + 1) + " / " + str.tostring(i_minBars), text_color = sufficientHistory ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 8, "OHLC / VOLUME", text_halign = text.align_left)
+    table.cell(debugTable, 1, 8, (ohlcValid ? "OK" : "INVALID") + " / " + (volumeValid ? "OK" : "NA"), text_color = (ohlcValid and volumeValid) ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 9, "ATR(14)", text_halign = text.align_left)
+    table.cell(debugTable, 1, 9, atrValid ? str.tostring(atrValue) : "N/A", text_color = atrValid ? color.gray : color.red, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 10, "GAP / ABNORMAL / STALE", text_halign = text.align_left)
+    table.cell(debugTable, 1, 10, (dataGapDetected or abnormalBar or staleDataDetected) ?
+         ((dataGapDetected ? "GAP " : "") + (abnormalBar ? "ABN " : "") + (staleDataDetected ? "STALE" : "")) : "OK",
+         text_color = (dataGapDetected or abnormalBar or staleDataDetected) ? color.red : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 11, "ISSUES", text_halign = text.align_left)
+    table.cell(debugTable, 1, 11, reasonsText, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 12, "REQUEST BUDGET", text_halign = text.align_left)
+    table.cell(debugTable, 1, 12, "0 / 40 (no request.* used yet)", text_color = color.gray, text_halign = text.align_left)
+
+// -----------------------------------------------------------------------------
+// VISUAL CONFIRMATION (minimal — no panel/alert module yet)
+// -----------------------------------------------------------------------------
+bgcolor(i_showBg and currentState == EngineState.DATA_INVALID ? color.new(color.red, 90) : na)
