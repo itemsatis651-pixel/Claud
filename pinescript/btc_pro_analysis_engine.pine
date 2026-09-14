@@ -127,7 +127,12 @@
 // check before entering the `for`.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A-D: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM + Price Action + Momentum + Participation", shorttitle = "BTC-PRO-ABCDEFGHI", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
+// Title/shorttitle kept short and FIXED on purpose (TradingView hard limits:
+// title <=128 chars, shorttitle much shorter) — a v0.5 title that spelled out
+// every module by name already broke the 128-char limit once modules kept
+// being added. Full module list lives in the header comment above and in
+// ENGINE_VERSION instead, where there is no length limit.
+indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
 
 var string ENGINE_VERSION = "v0.9.0-phaseD-participation"
 
