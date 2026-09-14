@@ -3,9 +3,9 @@
 // =============================================================================
 // BTC PRO ANALYSIS ENGINE
 // PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones +
-// Fibonacci + Breakout/Retest FSM) + PHASE D, part 1 (Price Action) — built
-// incrementally, one module at a time, each confirmed working before the
-// next is added (Madde 122).
+// Fibonacci + Breakout/Retest FSM) + PHASE D, parts 1-2 (Price Action +
+// Momentum) — built incrementally, one module at a time, each confirmed
+// working before the next is added (Madde 122).
 //
 // MODULES INCLUDED SO FAR:
 //   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
@@ -57,9 +57,23 @@
 //      evidence, not a new family). Price Action is explicitly NOT an entry
 //      by itself (Madde 22): no Setup/Trigger/Decision engine consumes it yet.
 //
+//   8. MOMENTUM ENGINE (Madde 23) — second item of Phase D. Uses RSI + MACD
+//      histogram only, NOT also Stochastic/CCI as Madde 23 casually lists —
+//      those would be highly redundant with RSI in the same MOMENTUM family
+//      (Madde 6 double-counting ban). The goal is a STATE label
+//      (ACCELERATING/DECELERATING/RECOVERING/WEAKENING/NEUTRAL), never "RSI
+//      30 = LONG" (Madde 23 explicit prohibition, honored: RSI/MACD values
+//      never feed any direction/entry logic here, only the state label).
+//      Divergence detection reuses the SAME central confirmed-swing function
+//      (Madde 14 v3.1 EK) — RSI is snapshotted at each confirmed swing bar
+//      (inside Structure's existing swing-registration blocks, a small
+//      addition, not a rewrite) and compared HH-vs-lower-RSI /
+//      LL-vs-higher-RSI. Reported as DIVERGENCE DETECTED, never as a
+//      guaranteed reversal (Madde 23). Tagged EvidenceFamily.MOMENTUM.
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
-//   - Momentum refinement and Participation refinement (Madde 121 Phase D) —
-//     the other two Phase D items, separate modules from Price Action.
+//   - Participation refinement (Madde 121 Phase D) — the remaining Phase D
+//     item, a separate module from Price Action/Momentum.
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation/
 //     volume evidence — Price Action now exists but Participation/volume
 //     still doesn't) and HTF_IMPORTANCE (needs MTF, Phase E) are NOT
@@ -95,9 +109,9 @@
 // check before entering the `for`.
 // =============================================================================
 
-indicator("BTC PRO ANALYSIS ENGINE — Phase A-D: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM + Price Action", shorttitle = "BTC-PRO-ABCDEFG", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
+indicator("BTC PRO ANALYSIS ENGINE — Phase A-D: Data Gate + Regime + Structure + Zones + Fibonacci + Breakout FSM + Price Action + Momentum", shorttitle = "BTC-PRO-ABCDEFGH", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50)
 
-var string ENGINE_VERSION = "v0.7.0-phaseD-price-action"
+var string ENGINE_VERSION = "v0.8.0-phaseD-momentum"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -143,7 +157,9 @@ var EngineState currentState = EngineState.DATA_INVALID
 // Fibonacci "location evidence", so it shares the SAME family as Zone rather
 // than getting its own), TRIGGER (Price Action module — Madde 64 lists
 // "rejection"/"reclaim"/"close confirmation" as trigger examples, which is
-// exactly what Price Action's patterns are).
+// exactly what Price Action's patterns are), MOMENTUM (this module — RSI +
+// MACD histogram only, not also Stochastic/CCI, to avoid double-counting
+// within this same family, Madde 6).
 // -----------------------------------------------------------------------------
 enum EvidenceFamily
     CONTEXT_REGIME
@@ -287,6 +303,47 @@ f_isIdleBreakoutState(BreakoutFSMState s) =>
     s == BreakoutFSMState.PRE_BREAKOUT or s == BreakoutFSMState.STALE or
      s == BreakoutFSMState.FAILED_BREAKOUT or s == BreakoutFSMState.REVERSAL_CANDIDATE or
      s == BreakoutFSMState.ENTRY
+
+// -----------------------------------------------------------------------------
+// MOMENTUM ENUMS (Madde 23) — a STATE label, never "RSI 30 = LONG" style
+// automatic direction-from-level logic.
+// -----------------------------------------------------------------------------
+enum MomentumState
+    NEUTRAL
+    ACCELERATING
+    DECELERATING
+    RECOVERING
+    WEAKENING
+
+enum MomentumDirection
+    NONE
+    BULLISH
+    BEARISH
+
+enum DivergenceType
+    NONE
+    BULLISH
+    BEARISH
+
+f_momStateLabel(MomentumState s) =>
+    switch s
+        MomentumState.ACCELERATING => "ACCELERATING"
+        MomentumState.DECELERATING => "DECELERATING"
+        MomentumState.RECOVERING   => "RECOVERING"
+        MomentumState.WEAKENING    => "WEAKENING"
+        =>                             "NEUTRAL"
+
+f_momDirLabel(MomentumDirection d) =>
+    switch d
+        MomentumDirection.BULLISH => "BULLISH"
+        MomentumDirection.BEARISH => "BEARISH"
+        =>                            "NONE"
+
+f_divergenceLabel(DivergenceType d) =>
+    switch d
+        DivergenceType.BULLISH => "BULLISH DIVERGENCE"
+        DivergenceType.BEARISH => "BEARISH DIVERGENCE"
+        =>                          "NONE"
 
 // -----------------------------------------------------------------------------
 // SUPPORT/RESISTANCE ZONE TYPE + HELPERS (Madde 15, 16) — built ONLY on top of
@@ -510,6 +567,19 @@ i_rejectionRangeMult = input.float(0.5, "Rejection: Min Wick (x bar range)", min
 i_strongCloseThreshold = input.float(0.7, "Strong Close Threshold (close location)", minval = 0.5, maxval = 1, group = grpPriceAction)
 i_showPriceActionMarks = input.bool(true, "Show Price Action Markers", group = grpPriceAction)
 
+// -----------------------------------------------------------------------------
+// INPUTS — MOMENTUM (Madde 23)
+// -----------------------------------------------------------------------------
+grpMomentum = "Momentum"
+i_rsiLen = input.int(14, "RSI Length", minval = 1, group = grpMomentum)
+i_rsiOverbought = input.float(70, "RSI Overbought", minval = 50, maxval = 100, group = grpMomentum)
+i_rsiOversold = input.float(30, "RSI Oversold", minval = 0, maxval = 50, group = grpMomentum)
+i_macdFast = input.int(12, "MACD Fast Length", minval = 1, group = grpMomentum)
+i_macdSlow = input.int(26, "MACD Slow Length", minval = 1, group = grpMomentum)
+i_macdSignal = input.int(9, "MACD Signal Length", minval = 1, group = grpMomentum)
+i_momSlopeLookback = input.int(3, "Slope Lookback (bars)", minval = 1, group = grpMomentum)
+i_showMomentumMarks = input.bool(true, "Show Divergence Markers", group = grpMomentum)
+
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
 i_diagDetail = input.string("FULL", "Diagnostics Detail", options = ["COMPACT", "FULL"], group = grpDebug,
@@ -661,15 +731,27 @@ regimeConfidence = primaryRegime == RegimeType.TRANSITION ? ConfidenceLevel.LOW 
 pivotHighPrice = ta.pivothigh(i_pivotLeft, i_pivotRight)
 pivotLowPrice  = ta.pivotlow(i_pivotLeft, i_pivotRight)
 
+// Computed here (unconditional, top-level, before Momentum's own section
+// further below) SOLELY so the swing-registration blocks below can snapshot
+// RSI-at-swing-bar for divergence detection (Madde 23) — divergence must
+// reuse the SAME central swing function rather than inventing its own pivot
+// search (Madde 14 v3.1 EK). The full Momentum state classification lives in
+// its own section later, after Price Action.
+rsiValue = ta.rsi(close, i_rsiLen)
+
 var float lastSwingHighPrice    = na   // last CONFIRMED swing high (KNOWN at lastSwingHighKnownBar)
 var int   lastSwingHighSwingBar = na   // SWING_TIME (bar it actually occurred)
 var int   lastSwingHighKnownBar = na   // KNOWN_TIME (bar the script learned about it)
 var float prevSwingHighPrice    = na
+var float lastSwingHighRSI      = na   // RSI value AT the swing bar (SWING_TIME), for divergence
+var float prevSwingHighRSI      = na
 
 var float lastSwingLowPrice    = na
 var int   lastSwingLowSwingBar = na
 var int   lastSwingLowKnownBar = na
 var float prevSwingLowPrice    = na
+var float lastSwingLowRSI      = na
+var float prevSwingLowRSI      = na
 
 var SwingLabel lastHighLabel = SwingLabel.NONE
 var SwingLabel lastLowLabel  = SwingLabel.NONE
@@ -707,8 +789,10 @@ if barstate.isconfirmed
     //    is the swing candle's wick-to-body span — no arbitrary ATR guess.
     if not na(pivotHighPrice)
         prevSwingHighPrice := lastSwingHighPrice
+        prevSwingHighRSI := lastSwingHighRSI
         lastHighLabel := na(prevSwingHighPrice) ? SwingLabel.NONE : (pivotHighPrice > prevSwingHighPrice ? SwingLabel.HH : SwingLabel.LH)
         lastSwingHighPrice := pivotHighPrice
+        lastSwingHighRSI := rsiValue[i_pivotRight]   // RSI AT the swing bar, matching pivotHighPrice's own SWING_TIME
         lastSwingHighSwingBar := bar_index - i_pivotRight
         lastSwingHighKnownBar := bar_index
         zoneLowBoundHigh = math.max(open[i_pivotRight], close[i_pivotRight])
@@ -716,8 +800,10 @@ if barstate.isconfirmed
 
     if not na(pivotLowPrice)
         prevSwingLowPrice := lastSwingLowPrice
+        prevSwingLowRSI := lastSwingLowRSI
         lastLowLabel := na(prevSwingLowPrice) ? SwingLabel.NONE : (pivotLowPrice > prevSwingLowPrice ? SwingLabel.HL : SwingLabel.LL)
         lastSwingLowPrice := pivotLowPrice
+        lastSwingLowRSI := rsiValue[i_pivotRight]
         lastSwingLowSwingBar := bar_index - i_pivotRight
         lastSwingLowKnownBar := bar_index
         zoneHighBoundLow = math.min(open[i_pivotRight], close[i_pivotRight])
@@ -935,6 +1021,60 @@ priceActionMetricsText = (na(lastBodyToRange) ? "N/A" : "body/range " + str.tost
      "  range/ATR " + (na(lastRangeToAtr) ? "N/A" : str.tostring(lastRangeToAtr, "#.##"))
 
 // -----------------------------------------------------------------------------
+// MOMENTUM ENGINE (Madde 23) — RSI + MACD histogram only (not also Stochastic/
+// CCI, Madde 6 double-counting ban). Goal is a STATE label, never "RSI level
+// = direction" (rsiValue/macdHist never feed any entry/direction logic here).
+// -----------------------------------------------------------------------------
+rsiRising  = rsiValue > rsiValue[i_momSlopeLookback]
+rsiFalling = rsiValue < rsiValue[i_momSlopeLookback]
+rsiOverboughtNow = rsiValue >= i_rsiOverbought
+rsiOversoldNow   = rsiValue <= i_rsiOversold
+
+[macdLine, macdSignal, macdHist] = ta.macd(close, i_macdFast, i_macdSlow, i_macdSignal)
+histRising  = macdHist > macdHist[i_momSlopeLookback]
+histFalling = macdHist < macdHist[i_momSlopeLookback]
+
+momDirection = macdHist > 0 ? MomentumDirection.BULLISH : macdHist < 0 ? MomentumDirection.BEARISH : MomentumDirection.NONE
+
+momState = rsiOversoldNow and rsiRising ? MomentumState.RECOVERING :
+     rsiOverboughtNow and rsiFalling ? MomentumState.WEAKENING :
+     momDirection == MomentumDirection.BULLISH and histRising ? MomentumState.ACCELERATING :
+     momDirection == MomentumDirection.BULLISH and histFalling ? MomentumState.DECELERATING :
+     momDirection == MomentumDirection.BEARISH and histFalling ? MomentumState.ACCELERATING :
+     momDirection == MomentumDirection.BEARISH and histRising ? MomentumState.DECELERATING :
+     MomentumState.NEUTRAL
+
+var MomentumState     lastMomentumState = MomentumState.NEUTRAL
+var MomentumDirection lastMomentumDir   = MomentumDirection.NONE
+var float             lastRsiSnapshot   = na
+var DivergenceType    lastDivergence    = DivergenceType.NONE
+var int               lastDivergenceBar = na
+
+if barstate.isconfirmed
+    lastMomentumState := momState
+    lastMomentumDir := momDirection
+    lastRsiSnapshot := rsiValue
+
+    // Divergence (Madde 23): reuses the SAME confirmed swings Structure just
+    // registered above in this same bar — a new HH with LOWER RSI-at-swing
+    // than the previous HH is bearish divergence; a new LL with HIGHER
+    // RSI-at-swing is bullish divergence. Reported as DETECTED only, never a
+    // guaranteed reversal.
+    if not na(pivotHighPrice) and not na(prevSwingHighRSI) and not na(prevSwingHighPrice) and
+         lastSwingHighPrice > prevSwingHighPrice and lastSwingHighRSI < prevSwingHighRSI
+        lastDivergence := DivergenceType.BEARISH
+        lastDivergenceBar := bar_index
+    if not na(pivotLowPrice) and not na(prevSwingLowRSI) and not na(prevSwingLowPrice) and
+         lastSwingLowPrice < prevSwingLowPrice and lastSwingLowRSI > prevSwingLowRSI
+        lastDivergence := DivergenceType.BULLISH
+        lastDivergenceBar := bar_index
+
+divergenceAgeText = na(lastDivergenceBar) ? "" : " (" + str.tostring(bar_index - lastDivergenceBar) + " bars ago)"
+divergenceText = f_divergenceLabel(lastDivergence) + (lastDivergence == DivergenceType.NONE ? "" : divergenceAgeText)
+momentumText = f_momStateLabel(lastMomentumState) + (lastMomentumDir == MomentumDirection.NONE ? "" : " " + f_momDirLabel(lastMomentumDir)) +
+     "  RSI " + (na(lastRsiSnapshot) ? "N/A" : str.tostring(lastRsiSnapshot, "#.#"))
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -962,7 +1102,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 11 : 30, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 12 : 32, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -1002,8 +1142,14 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     table.cell(debugTable, 0, 9, "PRICE ACTION", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 9, lastPriceActionPatterns, text_size = size.tiny, text_color = lastPriceActionPatterns == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 10, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 10, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 10, "MOMENTUM", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 10, momentumText, text_size = size.tiny,
+         text_color = lastMomentumState == MomentumState.RECOVERING or lastMomentumState == MomentumState.ACCELERATING ? color.lime :
+                       lastMomentumState == MomentumState.WEAKENING ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 11, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 11, "0 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -1111,8 +1257,18 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 28, "CANDLE METRICS", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 28, priceActionMetricsText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 29, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 29, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 29, "MOMENTUM", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 29, momentumText, text_size = size.tiny,
+         text_color = lastMomentumState == MomentumState.RECOVERING or lastMomentumState == MomentumState.ACCELERATING ? color.lime :
+                       lastMomentumState == MomentumState.WEAKENING ? color.orange : color.gray,
+         text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 30, "DIVERGENCE", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 30, divergenceText, text_size = size.tiny,
+         text_color = lastDivergence == DivergenceType.NONE ? color.gray : color.fuchsia, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 31, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 31, "0 / 40 (no request.* used yet)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
@@ -1159,6 +1315,17 @@ plotshape(i_showPriceActionMarks and barstate.isconfirmed and (paBullEngulf or p
      title = "Bullish Price Action", style = shape.circle, location = location.belowbar, color = color.lime, size = size.tiny)
 plotshape(i_showPriceActionMarks and barstate.isconfirmed and (paBearEngulf or paStarShape),
      title = "Bearish Price Action", style = shape.circle, location = location.abovebar, color = color.red, size = size.tiny)
+
+// Momentum divergence (Madde 23): label at the swing bar itself (using the
+// central swing function's own SWING_TIME), not the current bar — "DIVERGENCE
+// DETECTED" only, never presented as a guaranteed reversal.
+if i_showMomentumMarks and barstate.isconfirmed and lastDivergenceBar == bar_index
+    if lastDivergence == DivergenceType.BEARISH
+        label.new(lastSwingHighSwingBar, lastSwingHighPrice, "DIV", style = label.style_label_down,
+             color = color.new(color.fuchsia, 0), textcolor = color.white, size = size.tiny)
+    if lastDivergence == DivergenceType.BULLISH
+        label.new(lastSwingLowSwingBar, lastSwingLowPrice, "DIV", style = label.style_label_up,
+             color = color.new(color.fuchsia, 0), textcolor = color.white, size = size.tiny)
 
 var array<box> zoneBoxes = array.new<box>()
 
