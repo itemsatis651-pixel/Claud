@@ -272,6 +272,17 @@
 // anything else — if so, the status is now the explicit "ALREADY
 // INVALIDATED" (R:R reported as N/A, not a fabricated number) instead of a
 // false "OK". Highlighted in orange in the diagnostics table.
+//
+// v0.12.1 QA FIX (🤍, Madde 125): user caught STATE showing ENTRY_PENDING
+// while the SETUP row showed NONE at the same time. Root cause: setupType
+// reused f_isIdleBreakoutState (built for the Breakout FSM's own "can a NEW
+// candidate start here" question) to decide "is there a setup to report" —
+// the two questions disagree exactly at BreakoutFSMState.ENTRY (idle for a
+// fresh candidate, but still the live result the state machine correctly
+// keeps at ENTRY_PENDING). Fixed with a DEDICATED f_isActiveSetupState
+// function for the Setup Classifier's own question (BREAKOUT_CANDIDATE/
+// CONFIRMED_BREAKOUT/RETEST_PENDING/ENTRY = active); f_isIdleBreakoutState
+// itself was left untouched since it is correct for its own purpose.
 // =============================================================================
 
 // Title/shorttitle kept short and FIXED on purpose (TradingView hard limits:
@@ -281,7 +292,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.12.0-setup-classifier-breakout-retest"
+var string ENGINE_VERSION = "v0.12.1-setup-state-consistency-fix"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -513,6 +524,20 @@ f_breakoutRetestEligible(BreakoutDirection dir, RegimeType regime) =>
     dir == BreakoutDirection.UP   ? (regime == RegimeType.BULL_TREND or regime == RegimeType.TRANSITION) :
      dir == BreakoutDirection.DOWN ? (regime == RegimeType.BEAR_TREND or regime == RegimeType.TRANSITION) :
      false
+
+// v0.12.1 QA FIX (🤍, Madde 125): "is there a setup to REPORT right now" is
+// NOT the same question as f_isIdleBreakoutState's "can a NEW candidate
+// START from here" — they disagree exactly at BreakoutFSMState.ENTRY (idle
+// for starting a fresh candidate, but still the live result of the setup
+// that just completed, which the state machine correctly keeps at
+// ENTRY_PENDING). Reusing f_isIdleBreakoutState for setupType caused the
+// STATE row to show ENTRY_PENDING while the SETUP row showed NONE — a real
+// inconsistency the user caught. A DEDICATED function for the Setup
+// Classifier's own question, leaving f_isIdleBreakoutState untouched (it is
+// correct for the Breakout FSM's own purpose).
+f_isActiveSetupState(BreakoutFSMState s) =>
+    s == BreakoutFSMState.BREAKOUT_CANDIDATE or s == BreakoutFSMState.CONFIRMED_BREAKOUT or
+     s == BreakoutFSMState.RETEST_PENDING or s == BreakoutFSMState.ENTRY
 
 // -----------------------------------------------------------------------------
 // MOMENTUM ENUMS (Madde 23) — a STATE label, never "RSI 30 = LONG" style
@@ -1593,7 +1618,7 @@ posSizeCompactText = "L " + (na(longPosSize) ? "N/A" : str.tostring(longPosSize,
 // f_breakoutRetestEligible above, purely from breakoutDir vs primaryRegime.
 // -----------------------------------------------------------------------------
 setupEligible = f_breakoutRetestEligible(breakoutDir, primaryRegime)
-setupType = setupEligible and not f_isIdleBreakoutState(breakoutState) ? SetupType.BREAKOUT_RETEST : SetupType.NONE
+setupType = setupEligible and f_isActiveSetupState(breakoutState) ? SetupType.BREAKOUT_RETEST : SetupType.NONE
 
 setupEligibilityText = breakoutDir == BreakoutDirection.NONE ? "N/A (no breakout attempt)" :
      setupEligible ? "ELIGIBLE (" + f_regimeLabel(primaryRegime) + ")" :
