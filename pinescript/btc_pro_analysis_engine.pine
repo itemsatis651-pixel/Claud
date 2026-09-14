@@ -226,6 +226,23 @@
 // per Pine's own documented remedy for this exact error: explicitly reserve
 // the buffer via `max_bars_back = 500` on the indicator() call, well above
 // every lookback actually used in this script.
+//
+// v0.11.1 QA FIX (🤍, Madde 125): user caught (via screenshots) that RISK
+// SHORT showed R:R 21-34 and status "OK" while price had ALREADY traded
+// above the computed short stop. Root cause: when no un-broken opposing
+// zone exists yet, the Risk Engine's stop reference falls back to
+// lastSwingHighPrice/lastSwingLowPrice (Madde 14's central swing function) —
+// but a swing is only "known" pivotRight bars after it actually happened,
+// so during a strong breakout (confirmed BOS UP in this case) price can
+// close well past that stale swing level before a NEW swing gets confirmed.
+// f_riskCalc was applying the ATR buffer and computing R:R against that
+// already-breached reference as if it were still valid, producing a
+// mechanically inflated R:R (tiny stop distance vs. a distant target) on a
+// premise that was already false. Fixed by checking, in f_riskCalc, whether
+// `entry` has already crossed the RAW (un-buffered) stopRaw before doing
+// anything else — if so, the status is now the explicit "ALREADY
+// INVALIDATED" (R:R reported as N/A, not a fabricated number) instead of a
+// false "OK". Highlighted in orange in the diagnostics table.
 // =============================================================================
 
 // Title/shorttitle kept short and FIXED on purpose (TradingView hard limits:
@@ -235,7 +252,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.11.0-phaseF-risk-engine"
+var string ENGINE_VERSION = "v0.11.1-risk-already-invalidated-fix"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -650,13 +667,25 @@ f_drawFibLevel(array<line> lines, array<label> labels, int startBar, int endBar,
 // this function applies the ATR buffer and the stop-distance/R:R gates.
 // -----------------------------------------------------------------------------
 f_riskCalc(bool isLong, float entry, float stopRaw, float targetRaw, float atrVal, float atrBufferMult, float maxStopPct, float minRR) =>
+    // v0.11.1 QA FIX: `stopRaw` is the RAW structural reference (a fallback
+    // last-swing price can be stale — the swing itself is only "known"
+    // pivotRight bars after the fact, Madde 14, while price may have
+    // already closed beyond it with a confirmed BOS). If entry has ALREADY
+    // crossed past stopRaw, the structural condition that would justify
+    // this LONG/SHORT idea is already gone — reporting a "stop"/R:R past
+    // that point would be evidence built on an already-broken premise
+    // (Madde 139/140: never a fabricated result). Checked on the
+    // UN-buffered stopRaw (the real structural line; the ATR buffer is
+    // only noise padding on top of it, Madde 44).
+    bool alreadyBreached = not na(stopRaw) and (isLong ? entry <= stopRaw : entry >= stopRaw)
     float stopLevel = na(stopRaw) or na(atrVal) ? na : (isLong ? stopRaw - atrVal * atrBufferMult : stopRaw + atrVal * atrBufferMult)
     float stopDist = na(stopLevel) ? na : math.abs(entry - stopLevel)
     bool stopTooWide = not na(stopDist) and entry > 0 and stopDist > entry * maxStopPct / 100
     float rewardDist = na(targetRaw) ? na : math.abs(targetRaw - entry)
-    float rr = (na(stopDist) or stopDist <= 0 or na(rewardDist)) ? na : rewardDist / stopDist
+    float rr = (alreadyBreached or na(stopDist) or stopDist <= 0 or na(rewardDist)) ? na : rewardDist / stopDist
     bool rrOk = not na(rr) and rr >= minRR
     string status = na(stopLevel) ? "NO STRUCTURAL STOP" :
+         alreadyBreached ? "ALREADY INVALIDATED" :
          na(targetRaw) ? "NO TARGET ZONE" :
          stopTooWide ? "STOP TOO WIDE" :
          not rrOk ? "R:R BELOW MIN" :
@@ -1572,10 +1601,10 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
          text_halign = text.align_left)
 
     table.cell(debugTable, 0, 14, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 14, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 1, 14, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
 
     table.cell(debugTable, 0, 15, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 15, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 1, 15, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
 
     table.cell(debugTable, 0, 16, "POSITION SIZE", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 16, posSizeCompactText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
@@ -1716,10 +1745,10 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
          text_halign = text.align_left)
 
     table.cell(debugTable, 0, 35, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 35, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 1, 35, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
 
     table.cell(debugTable, 0, 36, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 36, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 1, 36, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
 
     table.cell(debugTable, 0, 37, "POSITION SIZE (LONG)", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 37, posSizeLongText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
