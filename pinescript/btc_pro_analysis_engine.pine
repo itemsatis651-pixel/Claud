@@ -161,6 +161,31 @@
 //      ideas simultaneously (Madde 50 long/short symmetry audit) — neither
 //      side is privileged.
 //
+//  12. SETUP CLASSIFIER (Madde 18-19) — "setup-specific decision rules",
+//      second item of Phase F, per user decision (Position Sizing's own
+//      formula already exists inside the Risk Engine above and works;
+//      Madde 48's spot/perpetual/MAX EXPOSURE nuances are deliberately
+//      postponed until real setups/positions exist to test them against,
+//      i.e. after the Veto Engine). Of Madde 18's five named archetypes
+//      (PULLBACK CONTINUATION, BREAKOUT RETEST, RANGE REJECTION, FAILED
+//      BREAKOUT REVERSAL, MEAN REVERSION), only BREAKOUT RETEST is
+//      implemented — it reuses the Breakout FSM (Madde 20-21) as its ENTIRE
+//      trigger/confirmation/invalidation/expiry machinery (Madde 111 — no
+//      new state machine invented); the other four are declared in the
+//      SetupType enum (documenting the full taxonomy) but have no detection
+//      logic, so the classifier simply never outputs them. Eligibility
+//      (Madde 19, REGIME COMPATIBILITY) is a pure function of breakoutDir
+//      vs. primaryRegime — UP eligible in BULL_TREND/TRANSITION, DOWN
+//      eligible in BEAR_TREND/TRANSITION, neither eligible in RANGE (Madde
+//      19's own worked example pairs RANGE with rejection/mean-reversion,
+//      not breakout continuation). This FINALLY wires the state machine
+//      beyond DATA_INVALID/FLAT: FLAT -> WATCH (BREAKOUT_CANDIDATE) -> SETUP
+//      (CONFIRMED_BREAKOUT) -> ENTRY_PENDING (RETEST_PENDING or ENTRY),
+//      always gated by eligibility, and always capped at ENTRY_PENDING —
+//      CONFIRMED_LONG/CONFIRMED_SHORT require the Veto Engine (Madde 52-53)
+//      and Final Decision Engine (Madde 37), neither built yet, so advancing
+//      further would be a fabricated "confirmed" decision (Madde 139/140).
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
 //     evidence — both now exist, but no scoring engine combines them yet,
@@ -177,15 +202,19 @@
 //     note above), not merely postponed. Full multi-level MTF cascade (only
 //     ONE HTF level is requested so far, not the full 1D/4H/1H/15m stack)
 //     remains deferred.
-//   - Compact panel (Madde 114), Alert engine (Madde 116-117), Setup
-//     Classifier (Madde 18-19 — still not built, so Risk Engine stays a
-//     diagnostic calculator, not a live signal), Trigger/Veto/Decision
-//     engines, WATCH/SETUP/... state transitions (state machine still only
-//     reaches DATA_INVALID/FLAT — the Setup Classifier is what would unlock
-//     WATCH). Position sizing beyond the Risk Engine's own diagnostic
-//     numbers (Madde 88, backtest-time sizing) is out of scope until Phase
-//     H. Phase C, D, AND E are complete; Phase F is in progress (Risk
-//     Engine done) per the Madde 121 roadmap.
+//   - Compact panel (Madde 114), Alert engine (Madde 116-117). Four of the
+//     five Setup Classifier archetypes (PULLBACK CONTINUATION, RANGE
+//     REJECTION, FAILED BREAKOUT REVERSAL, MEAN REVERSION — only BREAKOUT
+//     RETEST is detected so far). Trigger engine (distinct from the Setup
+//     Classifier's own trigger concept — Madde 64's broader trigger
+//     taxonomy), Veto Engine (Madde 52-53), Final Decision Engine (Madde
+//     37) — CONFIRMED_LONG/CONFIRMED_SHORT/IN_POSITION/EXIT/COOLDOWN still
+//     do not exist because of this. Position sizing beyond the Risk
+//     Engine's own diagnostic numbers (Madde 48's spot/perpetual/MAX
+//     EXPOSURE nuances, Madde 88 backtest-time sizing) is out of scope
+//     until real setups exist to test it against. Phase C, D, AND E are
+//     complete; Phase F is in progress (Risk Engine + Setup Classifier's
+//     first archetype done) per the Madde 121 roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -252,7 +281,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.11.1-risk-already-invalidated-fix"
+var string ENGINE_VERSION = "v0.12.0-setup-classifier-breakout-retest"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -445,6 +474,45 @@ f_isIdleBreakoutState(BreakoutFSMState s) =>
     s == BreakoutFSMState.PRE_BREAKOUT or s == BreakoutFSMState.STALE or
      s == BreakoutFSMState.FAILED_BREAKOUT or s == BreakoutFSMState.REVERSAL_CANDIDATE or
      s == BreakoutFSMState.ENTRY
+
+// -----------------------------------------------------------------------------
+// SETUP CLASSIFIER ENUMS (Madde 18) — all FIVE archetypes Madde 18 names are
+// declared here (documenting the full taxonomy, same pattern as
+// EvidenceFamily/RegimeType existing before every producer was built), but
+// only BREAKOUT_RETEST has detection logic wired up this turn — see the
+// SETUP CLASSIFIER computation section for why (it reuses the Breakout FSM
+// almost entirely). The other four are declared, unused, and will simply
+// never be output — not a fake placeholder (Madde 139/140).
+// -----------------------------------------------------------------------------
+enum SetupType
+    NONE
+    BREAKOUT_RETEST
+    PULLBACK_CONTINUATION
+    RANGE_REJECTION
+    FAILED_BREAKOUT_REVERSAL
+    MEAN_REVERSION
+
+f_setupTypeLabel(SetupType t) =>
+    switch t
+        SetupType.BREAKOUT_RETEST          => "BREAKOUT RETEST"
+        SetupType.PULLBACK_CONTINUATION    => "PULLBACK CONTINUATION"
+        SetupType.RANGE_REJECTION          => "RANGE REJECTION"
+        SetupType.FAILED_BREAKOUT_REVERSAL => "FAILED BREAKOUT REVERSAL"
+        SetupType.MEAN_REVERSION           => "MEAN REVERSION"
+        =>                                     "NONE"
+
+// Madde 19 — SETUP ELIGIBILITY GATE / REGIME COMPATIBILITY: a breakout-retest
+// continuation is only eligible when its direction does not fight the
+// current regime. Pure function (no outer-scope references), so it stays
+// safe to define this early next to the other Breakout FSM helpers.
+// regimeConfidence is deliberately NOT part of this check — that is a
+// separate, already-documented gate (Madde 11/37) reserved for the future
+// Decision Engine, not to be conflated with regime-TYPE compatibility
+// (Madde 111: don't double up two different gates into one).
+f_breakoutRetestEligible(BreakoutDirection dir, RegimeType regime) =>
+    dir == BreakoutDirection.UP   ? (regime == RegimeType.BULL_TREND or regime == RegimeType.TRANSITION) :
+     dir == BreakoutDirection.DOWN ? (regime == RegimeType.BEAR_TREND or regime == RegimeType.TRANSITION) :
+     false
 
 // -----------------------------------------------------------------------------
 // MOMENTUM ENUMS (Madde 23) — a STATE label, never "RSI 30 = LONG" style
@@ -924,11 +992,14 @@ if barstate.isconfirmed
         currentState := EngineState.DATA_INVALID
     else if currentState == EngineState.DATA_INVALID
         currentState := EngineState.FLAT
-    // else: currentState is FLAT (or, once later phases exist, a state those
-    // modules manage) and data remains valid — nothing to do here. WATCH/SETUP/
-    // ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT/IN_POSITION/EXIT/COOLDOWN
-    // transitions are added when Setup/Trigger/Risk/Veto/Decision modules
-    // exist (Phase C+/F onward).
+    // else: currentState stays whatever it already was here — the actual
+    // FLAT/WATCH/SETUP/ENTRY_PENDING refinement now happens in a SECOND
+    // confirmed-bar block, further down, once the Setup Classifier's inputs
+    // (breakoutState, primaryRegime) are computed (Madde 18-19). This block
+    // only owns the DATA_INVALID gate. CONFIRMED_LONG/CONFIRMED_SHORT/
+    // IN_POSITION/EXIT/COOLDOWN still do NOT exist — those require the Veto
+    // Engine (Madde 52-53) and Final Decision Engine (Madde 37), neither of
+    // which is built yet.
 
 // -----------------------------------------------------------------------------
 // MARKET REGIME — TREND (Madde 10, 13). Structure/Zone exist now (below) but
@@ -1514,6 +1585,48 @@ posSizeShortText = f_posSizeLine(shortPosSize, shortNotional, shortMargin)
 posSizeCompactText = "L " + (na(longPosSize) ? "N/A" : str.tostring(longPosSize, "#.####")) + " / S " + (na(shortPosSize) ? "N/A" : str.tostring(shortPosSize, "#.####")) + " BTC"
 
 // -----------------------------------------------------------------------------
+// SETUP CLASSIFIER (Madde 18-19) — "setup-specific decision rules", Phase F.
+// Only BREAKOUT_RETEST is detected this turn (see the SetupType enum's
+// header comment for why); it reuses the Breakout FSM (Madde 20-21) as its
+// entire trigger/confirmation/invalidation/expiry machinery — no new state
+// machine invented (Madde 111). Eligibility (Madde 19) is computed by
+// f_breakoutRetestEligible above, purely from breakoutDir vs primaryRegime.
+// -----------------------------------------------------------------------------
+setupEligible = f_breakoutRetestEligible(breakoutDir, primaryRegime)
+setupType = setupEligible and not f_isIdleBreakoutState(breakoutState) ? SetupType.BREAKOUT_RETEST : SetupType.NONE
+
+setupEligibilityText = breakoutDir == BreakoutDirection.NONE ? "N/A (no breakout attempt)" :
+     setupEligible ? "ELIGIBLE (" + f_regimeLabel(primaryRegime) + ")" :
+     "NOT ELIGIBLE (" + f_breakoutDirLabel(breakoutDir) + " vs " + f_regimeLabel(primaryRegime) + ", Madde 19)"
+
+setupText = f_setupTypeLabel(setupType) + (setupType == SetupType.NONE ? "" : " " + f_breakoutDirLabel(breakoutDir)) +
+     "  [" + setupEligibilityText + "]"
+
+// Whichever Risk Engine side actually corresponds to this live setup's
+// direction (Madde 111 — reuse the already-computed LONG/SHORT numbers,
+// don't recompute a third time).
+setupRiskText = setupType != SetupType.BREAKOUT_RETEST ? "N/A" :
+     breakoutDir == BreakoutDirection.UP ? riskLongText : riskShortText
+
+// -----------------------------------------------------------------------------
+// STATE MACHINE — WATCH/SETUP/ENTRY_PENDING (Madde 18-19, 55). Second
+// confirmed-bar block (the first, above, only owns the DATA_INVALID gate —
+// see its comment) since it needs breakoutState/setupEligible, computed
+// later in the script than that block. Deliberately capped at
+// ENTRY_PENDING: CONFIRMED_LONG/CONFIRMED_SHORT need the Veto Engine
+// (Madde 52-53) and Final Decision Engine (Madde 37), neither built yet —
+// advancing further here would be a fabricated "confirmed" decision with no
+// veto behind it (Madde 139/140).
+// -----------------------------------------------------------------------------
+if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
+    currentState := not setupEligible ? EngineState.FLAT :
+         breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE ? EngineState.WATCH :
+         breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT ? EngineState.SETUP :
+         breakoutState == BreakoutFSMState.RETEST_PENDING ? EngineState.ENTRY_PENDING :
+         breakoutState == BreakoutFSMState.ENTRY ? EngineState.ENTRY_PENDING :
+         EngineState.FLAT
+
+// -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
 // -----------------------------------------------------------------------------
 reasons = array.new<string>()
@@ -1541,7 +1654,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 18 : 40, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 19 : 42, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -1609,8 +1722,11 @@ if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     table.cell(debugTable, 0, 16, "POSITION SIZE", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 16, posSizeCompactText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 17, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 17, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 17, "SETUP", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 17, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 18, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 18, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
@@ -1756,8 +1872,14 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 38, "POSITION SIZE (SHORT)", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 38, posSizeShortText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 39, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 39, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 39, "SETUP CLASSIFIER", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 39, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 40, "SETUP RISK", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 40, setupRiskText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 41, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 41, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
