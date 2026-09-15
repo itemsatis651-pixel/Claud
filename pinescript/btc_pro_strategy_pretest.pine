@@ -72,8 +72,8 @@ strategy("BTC PRO Strategy Pretest - Breakout Retest",
      default_qty_type = strategy.percent_of_equity,
      default_qty_value = 100,
      commission_type = strategy.commission.percent,
-     commission_value = input.float(0.10, "Commission % per side - OKX taker approx 0.10%", minval = 0, group = "Execution Costs"),
-     slippage = input.int(10, "Slippage in ticks - check syminfo.mintick on your chart, default is a starting point", minval = 0, group = "Execution Costs"),
+     commission_value = input.float(0.10, "Commission percent per side"),
+     slippage = input.int(10, "Slippage in ticks"),
      process_orders_on_close = true,
      max_bars_back = 500)
 
@@ -585,7 +585,7 @@ if barstate.islast
 
     closedTrades = strategy.closedtrades
     table.cell(infoTable, 0, 4, "CLOSED TRADES", text_size = size.small, text_halign = text.align_left)
-    table.cell(infoTable, 1, 4, str.tostring(closedTrades) + (closedTrades < 30 ? "  (< 30, DON'T interpret yet)" : ""),
+    table.cell(infoTable, 1, 4, str.tostring(closedTrades) + (closedTrades < 30 ? "  under 30, do not interpret yet" : ""),
          text_size = size.small, text_color = closedTrades < 30 ? color.red : color.lime, text_halign = text.align_left)
 
     table.cell(infoTable, 0, 5, "NET PROFIT", text_size = size.small, text_halign = text.align_left)
