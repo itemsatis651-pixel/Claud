@@ -278,17 +278,14 @@
 //      meta-rule. Deferred until that infrastructure exists, not silently
 //      dropped (Madde 139/140).
 //
-//      Also: per user report, the FULL diagnostics table (single block,
-//      45 rows) overflowed the visible pane on a tablet. Split into TWO
-//      table objects along a real conceptual seam — debugTable stays at
-//      top_right (context/market diagnostics: data gate, symbol, regime,
-//      structure, zones, Fibonacci, Price Action, Momentum, Participation
-//      — rows 0-32) and the new debugTableB sits at bottom_right (setup/
-//      risk/decision diagnostics: MTF, Risk Engine, Setup Classifier, Veto
-//      Engine — 13 rows). Pine only offers 9 fixed position.* anchors, no
-//      arbitrary x/y placement, so this is not literally side-by-side, but
-//      each panel is roughly half the old row count. COMPACT (20 rows)
-//      stays a single table — short enough already.
+//      Also: per user report, the FULL diagnostics table (single block, 45
+//      rows) overflowed the visible pane on a tablet. First attempt
+//      (v0.15.0) split it into two table objects (top_right + bottom_right)
+//      — the user then reported those two STILL visually overlapped on
+//      their device. Superseded (v0.15.1) by a genuine pagination system —
+//      see module 15's own note below and the DIAGNOSTICS section's
+//      f_addDiagRow — which is now the PERMANENT mechanism until Madde 114:
+//      one growing row list, one small table, an input picks which page.
 //
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
@@ -411,7 +408,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.15.0-signal-quality-gate-table-split"
+var string ENGINE_VERSION = "v0.15.1-diagnostics-pagination"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -1213,10 +1210,22 @@ grpSetupExtra = "Setup Classifier — Pullback / Range Rejection / Mean Reversio
 i_reactionPendingMaxBars = input.int(10, "Reaction Setup PENDING Timeout (bars)", minval = 1, group = grpSetupExtra,
      tooltip = "Zone/koşul dokunuşundan sonra tetikleyici (trigger) bu bar sayısı içinde gelmezse STALE olur.")
 
+// v0.15.1 QA FIX (🤍, Madde 125): user reported the two-table split
+// (top_right/bottom_right, v0.15.0) still overlapped on a tablet. Replaced
+// with a genuine pagination system — one comprehensive row list (the old
+// COMPACT/FULL split is retired; COMPACT was a different curated subset,
+// which only adds maintenance burden once pages exist), one small table,
+// shows i_diagRowsPerPage rows at a time, "PAGE" input picks which slice.
+// This is now the PERMANENT mechanism until the real Madde 114 panel
+// exists: any future module's new diagnostics row is added via
+// f_addDiagRow (see DIAGNOSTICS section) — never a new table, never a
+// manually-sized single block again.
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
-i_diagDetail = input.string("FULL", "Diagnostics Detail", options = ["COMPACT", "FULL"], group = grpDebug,
-     tooltip = "COMPACT: yalnızca kritik özet, FULL: tüm modül çıktıları.")
+i_diagRowsPerPage = input.int(11, "Diagnostics Rows per Page", minval = 4, maxval = 30, group = grpDebug,
+     tooltip = "Taşma olmadan sığan satır sayısı — kendi ekranınızda test edip ayarlayın (düşürmek daha kısa/daha çok sayfa demektir).")
+i_diagPage = input.int(1, "Diagnostics Page", minval = 1, maxval = 10, group = grpDebug,
+     tooltip = "Toplam sayfa sayısı satır sayısına göre otomatik hesaplanır ve panelin başlığında (PAGE x/y) gösterilir; bu değer o aralığın dışındaysa son sayfada kalınır.")
 i_showBg    = input.bool(true, "Highlight DATA_INVALID bars", group = grpDebug)
 
 // -----------------------------------------------------------------------------
@@ -1865,7 +1874,6 @@ riskShortText = f_riskLine(shortStopLevel, shortTargetLevel, shortRR, shortStatu
 
 posSizeLongText  = f_posSizeLine(longPosSize, longNotional, longMargin)
 posSizeShortText = f_posSizeLine(shortPosSize, shortNotional, shortMargin)
-posSizeCompactText = "L " + (na(longPosSize) ? "N/A" : str.tostring(longPosSize, "#.####")) + " / S " + (na(shortPosSize) ? "N/A" : str.tostring(shortPosSize, "#.####")) + " BTC"
 
 // -----------------------------------------------------------------------------
 // SETUP CLASSIFIER (Madde 18-19) — "setup-specific decision rules", Phase F.
@@ -2204,268 +2212,110 @@ if staleDataDetected
     array.push(reasons, "STALE FEED")
 reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
-// Row count depends on i_diagDetail, resolved once at table creation (inputs
-// are known constants throughout the run, so this ternary is safe here).
-// FULL mode split into TWO smaller table objects instead of one 45-row
-// block (user report: single block overflowed the visible pane on a
-// tablet). Pine only offers 9 fixed position.* anchors (no arbitrary x/y
-// placement), so true horizontal "side by side at the same height" isn't
-// directly achievable with two independent table.new() objects — top_right
-// (context/market diagnostics, unchanged content) and bottom_right
-// (setup/risk/decision diagnostics, everything the Setup Classifier/Risk
-// Engine/Veto Engine produce) were chosen instead: each panel is roughly
-// half the row count of the old single block, and the split is along a
-// real conceptual seam (market state vs. engine decision) rather than an
-// arbitrary row-count cut. COMPACT is already short enough (20 rows) and
-// stays a single table. debugTableB is declared unconditionally (Pine's
-// own var-table idiom) but only ever gets table.cell() calls in FULL mode,
-// so it draws nothing in COMPACT.
-var table debugTable  = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 20 : 33, border_width = 1)
-var table debugTableB = table.new(position.bottom_right, 2, 13, border_width = 1)
+// PAGINATED DIAGNOSTICS (Madde 125 v0.15.1 fix) — ONE growing list of rows,
+// ONE small table, sliced by i_diagPage/i_diagRowsPerPage. f_addDiagRow is
+// the PERMANENT way any future module adds a diagnostics row: push a
+// label/value/color triple here, never write a new table.cell block or a
+// new table object. Arrays are mutated in place (Madde 111 — same pattern
+// as f_upsertZone/f_updateZones taking array<Zone>).
+f_addDiagRow(array<string> labels, array<string> values, array<color> colors, string label, string value, color col) =>
+    array.push(labels, label)
+    array.push(values, value)
+    array.push(colors, col)
+    true
 
-if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
-    // Curated 10-row summary — added per user request once the FULL table
-    // (28 rows) started risking overflow on smaller screens/panes; FULL
-    // still has everything below for deeper debugging.
+diagLabels = array.new<string>()
+diagValues = array.new<string>()
+diagColors = array.new<color>()
+
+f_addDiagRow(diagLabels, diagValues, diagColors, "STATE", f_stateLabel(currentState), f_stateColor(currentState))
+f_addDiagRow(diagLabels, diagValues, diagColors, "DATA GATE (live)", liveDataValid ? "VALID" : "INVALID", liveDataValid ? color.lime : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "SYMBOL", syminfo.tickerid, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "EXCHANGE", syminfo.prefix + (exchangeOK ? "" : " (expected " + i_expectedExchange + ")"), exchangeOK ? color.gray : color.orange)
+f_addDiagRow(diagLabels, diagValues, diagColors, "INSTRUMENT", syminfo.basecurrency + "/" + syminfo.currency, instrumentOK ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MARKET TYPE", marketTypeGuess, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "BARS", str.tostring(bar_index + 1) + " / " + str.tostring(i_minBars), sufficientHistory ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "OHLC / VOLUME", (ohlcValid ? "OK" : "INVALID") + " / " + (volumeValid ? "OK" : "NA"), (ohlcValid and volumeValid) ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "GAP / ABNORMAL / STALE",
+     (dataGapDetected or abnormalBar or staleDataDetected) ? ((dataGapDetected ? "GAP " : "") + (abnormalBar ? "ABN " : "") + (staleDataDetected ? "STALE" : "")) : "OK",
+     (dataGapDetected or abnormalBar or staleDataDetected) ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "ISSUES", reasonsText, array.size(reasons) > 0 ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "REGIME", f_regimeLabel(primaryRegime) + " (" + str.tostring(barsInRegime) + " bars)",
+     primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : primaryRegime == RegimeType.RANGE ? color.yellow : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "REGIME CONFIDENCE", f_confLabel(regimeConfidence),
+     regimeConfidence == ConfidenceLevel.HIGH ? color.lime : regimeConfidence == ConfidenceLevel.MEDIUM ? color.yellow : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "TREND VOTES (bull/bear)", str.tostring(bullVotes) + "/4  " + str.tostring(bearVotes) + "/4", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "ADX(" + str.tostring(i_adxLen) + ")",
+     not na(adxValue) ? str.tostring(adxValue, "#.##") + (trendStrong ? " (strong)" : " (weak)") : "N/A", trendStrong ? color.gray : color.silver)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VOLATILITY", f_volLabel(volRegime) + (not na(atrPctRank) ? " (" + str.tostring(atrPctRank, "#") + "pct)" : ""),
+     volRegime == VolRegime.EXTREME_VOL ? color.red : volRegime == VolRegime.HIGH_VOL ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "STRUCTURE BIAS", f_biasLabel(structureBias),
+     structureBias == StructureBias.BULLISH ? color.lime : structureBias == StructureBias.BEARISH ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "LAST SWING HIGH", f_swingLabel(lastHighLabel) + " " + (na(lastSwingHighPrice) ? "N/A" : str.tostring(lastSwingHighPrice)) + " (" + swingHighAgeText + ")", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "LAST SWING LOW", f_swingLabel(lastLowLabel) + " " + (na(lastSwingLowPrice) ? "N/A" : str.tostring(lastSwingLowPrice)) + " (" + swingLowAgeText + ")", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "LAST EVENT", f_structEventLabel(lastStructureEvent) + lastEventAgeText,
+     lastStructureEvent == StructureEvent.BOS_UP or lastStructureEvent == StructureEvent.CHOCH_UP ? color.lime :
+      lastStructureEvent == StructureEvent.BOS_DOWN or lastStructureEvent == StructureEvent.CHOCH_DOWN ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "BREAKOUT STATE", breakoutStateText,
+     breakoutState == BreakoutFSMState.ENTRY ? color.lime : breakoutState == BreakoutFSMState.FAILED_BREAKOUT or breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "BREAKOUT LEVEL", breakoutLevelText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "ZONES (R/S)", str.tostring(array.size(resistanceZones)) + " / " + str.tostring(array.size(supportZones)), color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "NEAREST RESISTANCE", resZoneText, resZoneText == "NONE" ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "NEAREST SUPPORT", supZoneText, supZoneText == "NONE" ? color.gray : color.lime)
+f_addDiagRow(diagLabels, diagValues, diagColors, "FIB LEG", fibLegText, fibValid ? color.gray : color.silver)
+f_addDiagRow(diagLabels, diagValues, diagColors, "FIB TOUCH", fibTouchLabel, fibTouchLabel == "NONE" ? color.gray : color.yellow)
+f_addDiagRow(diagLabels, diagValues, diagColors, "PRICE ACTION", lastPriceActionPatterns, lastPriceActionPatterns == "NONE" ? color.gray : color.yellow)
+f_addDiagRow(diagLabels, diagValues, diagColors, "CANDLE METRICS", priceActionMetricsText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MOMENTUM", momentumText,
+     lastMomentumState == MomentumState.RECOVERING or lastMomentumState == MomentumState.ACCELERATING ? color.lime :
+      lastMomentumState == MomentumState.WEAKENING ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "DIVERGENCE", divergenceText, lastDivergence == DivergenceType.NONE ? color.gray : color.fuchsia)
+f_addDiagRow(diagLabels, diagValues, diagColors, "PARTICIPATION", participationText,
+     lastParticipationState == ParticipationState.CONFIRMING ? color.lime : lastParticipationState == ParticipationState.DIVERGING ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VWAP (rolling)", vwapText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MTF HTF", mtfHtfText, mtfAvailable ? color.gray : color.silver)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MTF AGREEMENT", f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""),
+     mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "RISK LONG", riskLongText, longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "RISK SHORT", riskShortText, shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "POSITION SIZE (LONG)", posSizeLongText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "POSITION SIZE (SHORT)", posSizeShortText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "SETUP CLASSIFIER", setupText, setupType != SetupType.NONE ? color.yellow : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "OTHER SETUPS", otherSetupsText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "SETUP RISK", setupRiskText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VETO (HARD)", hardVetoActive ? hardVetoText : (setupType == SetupType.NONE ? "N/A" : "none"), hardVetoActive ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VETO (SOFT)", array.size(softPenalties) > 0 ? softPenaltyText : (setupType == SetupType.NONE ? "N/A" : "none"), array.size(softPenalties) > 0 ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "REQUEST BUDGET", "1 / 40 (MTF: 1 tuple request.security call)", color.gray)
+
+// Slice: page 1 = rows 0..(N-1), page 2 = rows N..(2N-1), etc. Division by
+// i_diagRowsPerPage promotes to float in Pine, so math.ceil gives the true
+// page count; i_diagPage is clamped into [1, totalDiagPages] so an
+// out-of-range page (e.g. content shrinks after a settings change) falls
+// back to the last valid page instead of rendering nothing.
+totalDiagRows = array.size(diagLabels)
+// int()-wrapped throughout: math.ceil() returns float, and array.get()
+// further below requires an int index — mixing float back in here would
+// either fail to compile or (worse) silently coerce and risk an off-by-one
+// that hides rows, exactly the kind of thing Madde 139/140 warns against.
+totalDiagPages = math.max(1, int(math.ceil(float(totalDiagRows) / i_diagRowsPerPage)))
+currentDiagPage = math.min(i_diagPage, totalDiagPages)
+diagStartIdx = (currentDiagPage - 1) * i_diagRowsPerPage
+diagEndIdx = math.min(diagStartIdx + i_diagRowsPerPage - 1, totalDiagRows - 1)
+diagRowsShown = math.max(0, diagEndIdx - diagStartIdx + 1)
+
+// +1 row reserved for the header (ENGINE version + PAGE x/y) shown on
+// every page for orientation — never part of the paginated content itself.
+var table debugTable = table.new(position.top_right, 2, i_diagRowsPerPage + 1, border_width = 1)
+
+if i_showDebug and barstate.islast
     table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
-    table.cell(debugTable, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 1, "STATE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = f_stateColor(currentState), text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 2, "DATA GATE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_size = size.tiny, text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 3, "ISSUES", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 3, reasonsText, text_size = size.tiny, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 4, "REGIME", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 4, f_regimeLabel(primaryRegime) + " / " + f_confLabel(regimeConfidence), text_size = size.tiny,
-         text_color = primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 5, "STRUCTURE BIAS", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 5, f_biasLabel(structureBias), text_size = size.tiny,
-         text_color = structureBias == StructureBias.BULLISH ? color.lime : structureBias == StructureBias.BEARISH ? color.red : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 6, "BREAKOUT FSM", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 6, f_breakoutStateLabel(breakoutState) + (breakoutDir == BreakoutDirection.NONE ? "" : " " + f_breakoutDirLabel(breakoutDir)), text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 7, "NEAREST RESISTANCE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 7, resZoneText, text_size = size.tiny, text_color = resZoneText == "NONE" ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 8, "NEAREST SUPPORT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 8, supZoneText, text_size = size.tiny, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 9, "PRICE ACTION", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 9, lastPriceActionPatterns, text_size = size.tiny, text_color = lastPriceActionPatterns == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 10, "MOMENTUM", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 10, momentumText, text_size = size.tiny,
-         text_color = lastMomentumState == MomentumState.RECOVERING or lastMomentumState == MomentumState.ACCELERATING ? color.lime :
-                       lastMomentumState == MomentumState.WEAKENING ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 11, "PARTICIPATION", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 11, participationText, text_size = size.tiny,
-         text_color = lastParticipationState == ParticipationState.CONFIRMING ? color.lime : lastParticipationState == ParticipationState.DIVERGING ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 12, "MTF HTF", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 12, mtfHtfText, text_size = size.tiny, text_color = mtfAvailable ? color.gray : color.silver, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 13, "MTF AGREEMENT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 13, f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""), text_size = size.tiny,
-         text_color = mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 14, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 14, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 15, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 15, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 16, "POSITION SIZE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 16, posSizeCompactText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 17, "SETUP", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 17, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 18, "VETO", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 18, vetoText, text_size = size.tiny, text_color = hardVetoActive ? color.red : array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 19, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 19, "1 / 40", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-if i_showDebug and barstate.islast and i_diagDetail == "FULL"
-    table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
-    table.cell(debugTable, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 1, "STATE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 1, f_stateLabel(currentState), text_size = size.tiny, text_color = f_stateColor(currentState), text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 2, "DATA GATE (live)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 2, liveDataValid ? "VALID" : "INVALID", text_size = size.tiny, text_color = liveDataValid ? color.lime : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 3, "SYMBOL", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 3, syminfo.tickerid, text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 4, "EXCHANGE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 4, syminfo.prefix + (exchangeOK ? "" : " (expected " + i_expectedExchange + ")"), text_size = size.tiny, text_color = exchangeOK ? color.gray : color.orange, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 5, "INSTRUMENT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 5, syminfo.basecurrency + "/" + syminfo.currency, text_size = size.tiny, text_color = instrumentOK ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 6, "MARKET TYPE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 6, marketTypeGuess, text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 7, "BARS", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 7, str.tostring(bar_index + 1) + " / " + str.tostring(i_minBars), text_size = size.tiny, text_color = sufficientHistory ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 8, "OHLC / VOLUME", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 8, (ohlcValid ? "OK" : "INVALID") + " / " + (volumeValid ? "OK" : "NA"), text_size = size.tiny, text_color = (ohlcValid and volumeValid) ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 9, "GAP / ABNORMAL / STALE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 9, (dataGapDetected or abnormalBar or staleDataDetected) ?
-         ((dataGapDetected ? "GAP " : "") + (abnormalBar ? "ABN " : "") + (staleDataDetected ? "STALE" : "")) : "OK",
-         text_size = size.tiny, text_color = (dataGapDetected or abnormalBar or staleDataDetected) ? color.red : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 10, "ISSUES", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 10, reasonsText, text_size = size.tiny, text_color = array.size(reasons) > 0 ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 11, "REGIME", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 11, f_regimeLabel(primaryRegime) + " (" + str.tostring(barsInRegime) + " bars)", text_size = size.tiny,
-         text_color = primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : primaryRegime == RegimeType.RANGE ? color.yellow : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 12, "REGIME CONFIDENCE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 12, f_confLabel(regimeConfidence), text_size = size.tiny,
-         text_color = regimeConfidence == ConfidenceLevel.HIGH ? color.lime : regimeConfidence == ConfidenceLevel.MEDIUM ? color.yellow : color.red,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 13, "TREND VOTES (bull/bear)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 13, str.tostring(bullVotes) + "/4  " + str.tostring(bearVotes) + "/4", text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 14, "ADX(" + str.tostring(i_adxLen) + ")", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 14, not na(adxValue) ? str.tostring(adxValue, "#.##") + (trendStrong ? " (strong)" : " (weak)") : "N/A",
-         text_size = size.tiny, text_color = trendStrong ? color.gray : color.silver, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 15, "VOLATILITY", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 15, f_volLabel(volRegime) + (not na(atrPctRank) ? " (" + str.tostring(atrPctRank, "#") + "pct)" : ""),
-         text_size = size.tiny, text_color = volRegime == VolRegime.EXTREME_VOL ? color.red : volRegime == VolRegime.HIGH_VOL ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 16, "STRUCTURE BIAS", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 16, f_biasLabel(structureBias), text_size = size.tiny,
-         text_color = structureBias == StructureBias.BULLISH ? color.lime : structureBias == StructureBias.BEARISH ? color.red : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 17, "LAST SWING HIGH", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 17, f_swingLabel(lastHighLabel) + " " + (na(lastSwingHighPrice) ? "N/A" : str.tostring(lastSwingHighPrice)) + " (" + swingHighAgeText + ")",
-         text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 18, "LAST SWING LOW", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 18, f_swingLabel(lastLowLabel) + " " + (na(lastSwingLowPrice) ? "N/A" : str.tostring(lastSwingLowPrice)) + " (" + swingLowAgeText + ")",
-         text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 19, "LAST EVENT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 19, f_structEventLabel(lastStructureEvent) + lastEventAgeText, text_size = size.tiny,
-         text_color = lastStructureEvent == StructureEvent.BOS_UP or lastStructureEvent == StructureEvent.CHOCH_UP ? color.lime :
-                       lastStructureEvent == StructureEvent.BOS_DOWN or lastStructureEvent == StructureEvent.CHOCH_DOWN ? color.red : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 20, "BREAKOUT STATE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 20, breakoutStateText, text_size = size.tiny,
-         text_color = breakoutState == BreakoutFSMState.ENTRY ? color.lime : breakoutState == BreakoutFSMState.FAILED_BREAKOUT or breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE ? color.red : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 21, "BREAKOUT LEVEL", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 21, breakoutLevelText, text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 22, "ZONES (R/S)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 22, str.tostring(array.size(resistanceZones)) + " / " + str.tostring(array.size(supportZones)), text_size = size.tiny, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 23, "NEAREST RESISTANCE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 23, resZoneText, text_size = size.tiny, text_color = resZoneText == "NONE" ? color.gray : color.red, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 24, "NEAREST SUPPORT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 24, supZoneText, text_size = size.tiny, text_color = supZoneText == "NONE" ? color.gray : color.lime, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 25, "FIB LEG", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 25, fibLegText, text_size = size.tiny, text_color = fibValid ? color.gray : color.silver, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 26, "FIB TOUCH", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 26, fibTouchLabel, text_size = size.tiny, text_color = fibTouchLabel == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 27, "PRICE ACTION", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 27, lastPriceActionPatterns, text_size = size.tiny, text_color = lastPriceActionPatterns == "NONE" ? color.gray : color.yellow, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 28, "CANDLE METRICS", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 28, priceActionMetricsText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 29, "MOMENTUM", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 29, momentumText, text_size = size.tiny,
-         text_color = lastMomentumState == MomentumState.RECOVERING or lastMomentumState == MomentumState.ACCELERATING ? color.lime :
-                       lastMomentumState == MomentumState.WEAKENING ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 30, "DIVERGENCE", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 30, divergenceText, text_size = size.tiny,
-         text_color = lastDivergence == DivergenceType.NONE ? color.gray : color.fuchsia, text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 31, "PARTICIPATION", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 31, participationText, text_size = size.tiny,
-         text_color = lastParticipationState == ParticipationState.CONFIRMING ? color.lime : lastParticipationState == ParticipationState.DIVERGING ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTable, 0, 32, "VWAP (rolling)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 32, vwapText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-// Second panel (bottom_right): setup/risk/decision diagnostics — the
-// Setup Classifier, Risk Engine, and Veto Engine's own output, everything
-// downstream of "what does the market look like" (first panel above).
-if i_showDebug and barstate.islast and i_diagDetail == "FULL"
-    table.cell(debugTableB, 0, 0, "DECISION", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
-    table.cell(debugTableB, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 1, "MTF HTF", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 1, mtfHtfText, text_size = size.tiny, text_color = mtfAvailable ? color.gray : color.silver, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 2, "MTF AGREEMENT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 2, f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""), text_size = size.tiny,
-         text_color = mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray,
-         text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 3, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 3, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 4, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 4, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 5, "POSITION SIZE (LONG)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 5, posSizeLongText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 6, "POSITION SIZE (SHORT)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 6, posSizeShortText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 7, "SETUP CLASSIFIER", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 7, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 8, "OTHER SETUPS", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 8, otherSetupsText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 9, "SETUP RISK", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 9, setupRiskText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 10, "VETO (HARD)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 10, hardVetoActive ? hardVetoText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = hardVetoActive ? color.red : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 11, "VETO (SOFT)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 11, array.size(softPenalties) > 0 ? softPenaltyText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
-
-    table.cell(debugTableB, 0, 12, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTableB, 1, 12, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 1, 0, ENGINE_VERSION + "  PAGE " + str.tostring(currentDiagPage) + "/" + str.tostring(totalDiagPages),
+         text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    if diagRowsShown > 0
+        for i = 0 to diagRowsShown - 1
+            idx = diagStartIdx + i
+            table.cell(debugTable, 0, i + 1, array.get(diagLabels, idx), text_size = size.tiny, text_halign = text.align_left)
+            table.cell(debugTable, 1, i + 1, array.get(diagValues, idx), text_size = size.tiny, text_color = array.get(diagColors, idx), text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
