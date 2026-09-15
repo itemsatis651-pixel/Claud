@@ -258,6 +258,38 @@
 //      Reversion setup is never invisible just because Breakout Retest
 //      happens to be active at the same time (Madde 139/140).
 //
+//  15. SIGNAL QUALITY GATE (Madde 37 v3.1 EK) + diagnostics table split.
+//      "REGIME ACCEPTABLE" is now the FULL v3.1 EK definition: regime-type
+//      compatibility (already inside each archetype's eligibility, Madde
+//      19) PLUS regimeConfidence >= MEDIUM. When confidence is LOW, the
+//      spec is explicit — "en fazla WATCH" (at most WATCH) — so setupStage
+//      is clamped to FORMING (never CONFIRMED/READY) regardless of how far
+//      the underlying FSM progressed, and this is surfaced as a hard-veto
+//      reason (never silently hidden, same principle as every other veto).
+//      This was a real, explicitly specified threshold (MEDIUM, the
+//      existing ConfidenceLevel enum), unlike Madde 38 (MINIMUM
+//      INDEPENDENT EVIDENCE), which is DELIBERATELY NOT implemented as a
+//      gate — Madde 38 itself, plus its v3.1 EK, explicitly warns that
+//      picking a minimum-evidence-count threshold without proper
+//      multi-regime out-of-sample validation (Madde 95-97, EK-F) IS the
+//      data-mining bias the spec elsewhere warns against; this script has
+//      no backtest/validation infrastructure yet (Phase H/I), so
+//      implementing a guessed number now would violate Madde 38's own
+//      meta-rule. Deferred until that infrastructure exists, not silently
+//      dropped (Madde 139/140).
+//
+//      Also: per user report, the FULL diagnostics table (single block,
+//      45 rows) overflowed the visible pane on a tablet. Split into TWO
+//      table objects along a real conceptual seam — debugTable stays at
+//      top_right (context/market diagnostics: data gate, symbol, regime,
+//      structure, zones, Fibonacci, Price Action, Momentum, Participation
+//      — rows 0-32) and the new debugTableB sits at bottom_right (setup/
+//      risk/decision diagnostics: MTF, Risk Engine, Setup Classifier, Veto
+//      Engine — 13 rows). Pine only offers 9 fixed position.* anchors, no
+//      arbitrary x/y placement, so this is not literally side-by-side, but
+//      each panel is roughly half the old row count. COMPACT (20 rows)
+//      stays a single table — short enough already.
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
 //     evidence — both now exist, but no scoring engine combines them yet,
@@ -292,11 +324,16 @@
 //     repaint-sensitive final signal (N/A — nothing here repaints),
 //     critical calculation unavailable (already covered by Risk Engine's
 //     own NO STRUCTURAL STOP/NO TARGET ZONE statuses, not duplicated).
-//     Phase C, D, AND E are complete; Phase F is now substantially
-//     complete (Risk Engine, all five Setup Classifier archetypes, and the
-//     Veto Engine are all done — the engine can reach a real
-//     CONFIRMED_LONG/CONFIRMED_SHORT via any of the five setup types) per
-//     the Madde 121 roadmap; only the Final Decision Engine layer remains.
+//     Madde 38 (Minimum Independent Evidence, see module 15) is
+//     deliberately NOT a gate yet — no validated threshold exists, and the
+//     spec itself forbids guessing one. Phase C, D, AND E are complete;
+//     Phase F is now substantially complete (Risk Engine, all five Setup
+//     Classifier archetypes, the Veto Engine, and the Signal Quality
+//     Gate's REGIME CONFIDENCE clamp are all done — the engine can reach a
+//     real CONFIRMED_LONG/CONFIRMED_SHORT via any of the five setup types,
+//     gated by regime type AND confidence) per the Madde 121 roadmap; a
+//     scoring/aggregation Decision Engine layer and Madde 38's evidence
+//     count remain.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -374,7 +411,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.14.0-all-setup-archetypes"
+var string ENGINE_VERSION = "v0.15.0-signal-quality-gate-table-split"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -1983,6 +2020,21 @@ else if meanRevActiveEligible
     setupStage := meanRevState == ReactionFSMState.PENDING ? SetupStage.FORMING : SetupStage.READY
     setupPromotable := meanRevState == ReactionFSMState.CONFIRMED
 
+// SIGNAL QUALITY GATE (Madde 37 v3.1 EK) — "REGIME ACCEPTABLE" is regime-TYPE
+// compatibility (already inside each archetype's own eligibility check
+// above) PLUS regimeConfidence >= MEDIUM. If confidence is LOW, the spec is
+// explicit: "en fazla WATCH" (at most WATCH) — never SETUP/ENTRY_PENDING/
+// CONFIRMED, regardless of how far the underlying FSM itself has
+// progressed. This is a real, EXPLICITLY specified threshold (MEDIUM, the
+// existing ConfidenceLevel enum) — not a guessed number, so it is
+// implemented as a hard clamp. Contrast with Madde 38 (Minimum Independent
+// Evidence) just below setupRiskText, which the spec itself says must NOT
+// be guessed — that one is deliberately NOT gated yet.
+regimeAcceptable = regimeConfidence != ConfidenceLevel.LOW
+if setupType != SetupType.NONE and not regimeAcceptable
+    setupStage := SetupStage.FORMING
+    setupPromotable := false
+
 setupText = setupType != SetupType.NONE ?
      f_setupTypeLabel(setupType) + " " + f_breakoutDirLabel(setupDir) + "  [ELIGIBLE]" :
      (f_isActiveSetupState(breakoutState) and not setupEligible) ?
@@ -2022,9 +2074,17 @@ setupRiskText = setupType == SetupType.NONE ? "N/A" :
 //   SETUP INVALID     = Setup Classifier says not eligible, or the
 //                        Breakout FSM already failed/is idle (Madde 19,
 //                        Madde 52's "failed setup").
+// A separate, EXPLICIT gate (not part of the precedence list above, applied
+// earlier in the Setup Classifier section — see regimeAcceptable):
+// REGIME CONFIDENCE < MEDIUM caps the state at WATCH per Madde 37 v3.1 EK
+// ("REGIME ACCEPTABLE" = regime-type compatibility, already covered by each
+// archetype's own eligibility, PLUS confidence >= MEDIUM). Also surfaced
+// here as a hard-veto reason for visibility, since it has the same
+// practical effect (no CONFIRMED this bar).
 // SOFT PENALTIES (Madde 52) are informational only, never block CONFIRMED:
 // weak participation, weak momentum, MTF NEUTRAL (as opposed to the hard
-// CONFLICT), low regime confidence, elevated volatility.
+// CONFLICT), elevated volatility. Low regime confidence is now a HARD gate
+// (Madde 37 v3.1 EK, see below), not a soft penalty.
 //
 // Per explicit user instruction: no NEW magic-number threshold is
 // hardcoded here — R:R is already i_minRR (Risk Engine's own input), and
@@ -2046,6 +2106,8 @@ if structureInvalid
     array.push(hardVetoReasons, "STRUCTURE INVALID (severe MTF conflict)")
 if setupInvalid
     array.push(hardVetoReasons, "SETUP INVALID (no active/eligible setup, Madde 18-19)")
+if setupType != SetupType.NONE and not regimeAcceptable
+    array.push(hardVetoReasons, "REGIME CONFIDENCE LOW (Madde 37 v3.1 EK — capped at WATCH)")
 hardVetoActive = array.size(hardVetoReasons) > 0
 
 softPenalties = array.new<string>()
@@ -2055,8 +2117,11 @@ if lastMomentumState == MomentumState.WEAKENING or lastMomentumState == Momentum
     array.push(softPenalties, "weak momentum")
 if mtfAgreement == MtfAgreement.NEUTRAL
     array.push(softPenalties, "MTF unclear")
-if regimeConfidence == ConfidenceLevel.LOW
-    array.push(softPenalties, "low regime confidence")
+// Low regime confidence is now a HARD gate above (Madde 37 v3.1 EK,
+// "REGIME ACCEPTABLE" = type compatibility + confidence >= MEDIUM), not a
+// soft penalty — listing it here too would just duplicate the same reason
+// under both HARD and SOFT (Madde 6 double-counting spirit, applied to
+// the diagnostics themselves).
 if volRegime == VolRegime.HIGH_VOL or volRegime == VolRegime.EXTREME_VOL
     array.push(softPenalties, "elevated volatility")
 
@@ -2141,7 +2206,22 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 20 : 45, border_width = 1)
+// FULL mode split into TWO smaller table objects instead of one 45-row
+// block (user report: single block overflowed the visible pane on a
+// tablet). Pine only offers 9 fixed position.* anchors (no arbitrary x/y
+// placement), so true horizontal "side by side at the same height" isn't
+// directly achievable with two independent table.new() objects — top_right
+// (context/market diagnostics, unchanged content) and bottom_right
+// (setup/risk/decision diagnostics, everything the Setup Classifier/Risk
+// Engine/Veto Engine produce) were chosen instead: each panel is roughly
+// half the row count of the old single block, and the split is along a
+// real conceptual seam (market state vs. engine decision) rather than an
+// arbitrary row-count cut. COMPACT is already short enough (20 rows) and
+// stays a single table. debugTableB is declared unconditionally (Pine's
+// own var-table idiom) but only ever gets table.cell() calls in FULL mode,
+// so it draws nothing in COMPACT.
+var table debugTable  = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 20 : 33, border_width = 1)
+var table debugTableB = table.new(position.bottom_right, 2, 13, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -2342,43 +2422,50 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 32, "VWAP (rolling)", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 32, vwapText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 33, "MTF HTF", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 33, mtfHtfText, text_size = size.tiny, text_color = mtfAvailable ? color.gray : color.silver, text_halign = text.align_left)
+// Second panel (bottom_right): setup/risk/decision diagnostics — the
+// Setup Classifier, Risk Engine, and Veto Engine's own output, everything
+// downstream of "what does the market look like" (first panel above).
+if i_showDebug and barstate.islast and i_diagDetail == "FULL"
+    table.cell(debugTableB, 0, 0, "DECISION", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    table.cell(debugTableB, 1, 0, ENGINE_VERSION, text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 34, "MTF AGREEMENT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 34, f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""), text_size = size.tiny,
+    table.cell(debugTableB, 0, 1, "MTF HTF", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 1, mtfHtfText, text_size = size.tiny, text_color = mtfAvailable ? color.gray : color.silver, text_halign = text.align_left)
+
+    table.cell(debugTableB, 0, 2, "MTF AGREEMENT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 2, f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""), text_size = size.tiny,
          text_color = mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray,
          text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 35, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 35, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 3, "RISK LONG", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 3, riskLongText, text_size = size.tiny, text_color = longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 36, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 36, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 4, "RISK SHORT", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 4, riskShortText, text_size = size.tiny, text_color = shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 37, "POSITION SIZE (LONG)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 37, posSizeLongText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 5, "POSITION SIZE (LONG)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 5, posSizeLongText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 38, "POSITION SIZE (SHORT)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 38, posSizeShortText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 6, "POSITION SIZE (SHORT)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 6, posSizeShortText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 39, "SETUP CLASSIFIER", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 39, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 7, "SETUP CLASSIFIER", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 7, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 40, "OTHER SETUPS", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 40, otherSetupsText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 8, "OTHER SETUPS", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 8, otherSetupsText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 41, "SETUP RISK", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 41, setupRiskText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 9, "SETUP RISK", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 9, setupRiskText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 42, "VETO (HARD)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 42, hardVetoActive ? hardVetoText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = hardVetoActive ? color.red : color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 10, "VETO (HARD)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 10, hardVetoActive ? hardVetoText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = hardVetoActive ? color.red : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 43, "VETO (SOFT)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 43, array.size(softPenalties) > 0 ? softPenaltyText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 11, "VETO (SOFT)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 11, array.size(softPenalties) > 0 ? softPenaltyText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 44, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 44, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTableB, 0, 12, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTableB, 1, 12, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
