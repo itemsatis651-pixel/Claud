@@ -217,6 +217,47 @@
 //      far: the engine can now, for the very first time, reach a real
 //      CONFIRMED_LONG/CONFIRMED_SHORT rather than capping at ENTRY_PENDING.
 //
+//  14. REMAINING SETUP ARCHETYPES (Madde 18) — per user decision, all four
+//      built together in one turn against the now-existing Veto Engine,
+//      instead of one at a time capped at ENTRY_PENDING with no consumer
+//      (the same trap Risk Engine sat in before the Setup Classifier
+//      existed). FAILED_BREAKOUT_REVERSAL needs NO new state machine — a
+//      direct reinterpretation of the Breakout FSM's own REVERSAL_CANDIDATE
+//      state (Madde 111), reversal direction = opposite of the failed
+//      breakout's own direction, eligible when that reversal direction
+//      does not fight the prevailing regime (Madde 19). PULLBACK_
+//      CONTINUATION, RANGE_REJECTION, and MEAN_REVERSION share ONE generic,
+//      lightweight "reaction" state machine (ReactionFSMState: IDLE ->
+//      PENDING -> CONFIRMED, or FAILED/STALE) — touch a reference
+//      level/condition, wait for a reversal-style trigger within
+//      i_reactionPendingMaxBars bars, or fail if the level breaks first
+//      (Madde 111 — one mechanism reused three times with different
+//      eligibility/touch/trigger conditions, not three near-duplicate
+//      FSMs): Pullback Continuation touches the nearest support/resistance
+//      zone in the direction of an established trend (BULL_TREND/
+//      BEAR_TREND only); Range Rejection touches either zone edge, gated
+//      to RANGE regime only (Madde 19's own worked example); Mean
+//      Reversion uses RSI oversold/overbought (already-computed booleans)
+//      instead of a zone touch — genuine differentiation from Range
+//      Rejection, not a duplicate — gated to RANGE/TRANSITION. A PRIORITY
+//      order (BREAKOUT_RETEST > FAILED_BREAKOUT_REVERSAL > PULLBACK_
+//      CONTINUATION > RANGE_REJECTION > MEAN_REVERSION, trend/breakout
+//      setups ranked above range/reversion ones — consistent with this
+//      project's own backtest research, README Adım 3: Donchian
+//      trend-following demonstrably more robust than mean-reversion for
+//      BTC) resolves the rare case where more than one is simultaneously
+//      eligible (regime-gating already keeps them mostly exclusive). The
+//      Setup Classifier, Risk Engine, Veto Engine, and state machine are
+//      now genuinely archetype-agnostic — driven by the generic
+//      setupType/setupStage/setupDir/setupPromotable, not by
+//      Breakout-FSM-specific fields — so all five archetypes reach
+//      CONFIRMED_LONG/CONFIRMED_SHORT through the exact same veto-gated
+//      path (Madde 111, no separate decision logic per archetype). A new
+//      OTHER SETUPS diagnostics row (FULL only) shows the non-winning
+//      archetypes' raw FSM state, so a forming Pullback/Range/Mean-
+//      Reversion setup is never invisible just because Breakout Retest
+//      happens to be active at the same time (Madde 139/140).
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
 //     evidence — both now exist, but no scoring engine combines them yet,
@@ -233,32 +274,29 @@
 //     note above), not merely postponed. Full multi-level MTF cascade (only
 //     ONE HTF level is requested so far, not the full 1D/4H/1H/15m stack)
 //     remains deferred.
-//   - Compact panel (Madde 114), Alert engine (Madde 116-117). Four of the
-//     five Setup Classifier archetypes (PULLBACK CONTINUATION, RANGE
-//     REJECTION, FAILED BREAKOUT REVERSAL, MEAN REVERSION — only BREAKOUT
-//     RETEST is detected so far; per user decision, deliberately deferred
-//     until the Veto Engine existed so they can all be integrated against
-//     it in one pass instead of piecemeal). Trigger engine (distinct from
-//     the Setup Classifier's own trigger concept — Madde 64's broader
-//     trigger taxonomy). Final Decision Engine (Madde 37) — the Veto
-//     Engine now gates CONFIRMED_LONG/CONFIRMED_SHORT directly, but a
-//     dedicated scoring/aggregation Decision Engine layer on top of it
-//     does not exist yet. IN_POSITION/EXIT/COOLDOWN (Madde 55-56 Position
-//     Lifecycle) still do not exist — need the Execution Engine, Phase G.
-//     Position sizing beyond the Risk Engine's own diagnostic numbers
-//     (Madde 48's spot/perpetual/MAX EXPOSURE nuances, Madde 88
-//     backtest-time sizing) is out of scope until real positions exist to
-//     test it against. Some Madde 52 hard-veto/soft-penalty candidates are
-//     NOT checked because no data source exists for them yet: EXECUTION
-//     INVALID, LEVERAGE CASCADE RISK (EK-A), ACCOUNT CIRCUIT BREAKER
-//     (EK-C), position/exposure violation, unsupported timeframe (Madde
-//     32), "late entry" (no defined threshold), repaint-sensitive final
-//     signal (N/A — nothing here repaints), critical calculation
-//     unavailable (already covered by Risk Engine's own NO STRUCTURAL
-//     STOP/NO TARGET ZONE statuses, not duplicated). Phase C, D, AND E are
-//     complete; Phase F is in progress (Risk Engine + Setup Classifier's
-//     first archetype + Veto Engine done — the engine can now reach a
-//     real CONFIRMED_LONG/CONFIRMED_SHORT) per the Madde 121 roadmap.
+//   - Compact panel (Madde 114), Alert engine (Madde 116-117). Trigger
+//     engine (distinct from the Setup Classifier's own trigger concept —
+//     Madde 64's broader trigger taxonomy). Final Decision Engine (Madde
+//     37) — the Veto Engine now gates CONFIRMED_LONG/CONFIRMED_SHORT
+//     directly, but a dedicated scoring/aggregation Decision Engine layer
+//     on top of it does not exist yet. IN_POSITION/EXIT/COOLDOWN (Madde
+//     55-56 Position Lifecycle) still do not exist — need the Execution
+//     Engine, Phase G. Position sizing beyond the Risk Engine's own
+//     diagnostic numbers (Madde 48's spot/perpetual/MAX EXPOSURE nuances,
+//     Madde 88 backtest-time sizing) is out of scope until real positions
+//     exist to test it against. Some Madde 52 hard-veto/soft-penalty
+//     candidates are NOT checked because no data source exists for them
+//     yet: EXECUTION INVALID, LEVERAGE CASCADE RISK (EK-A), ACCOUNT
+//     CIRCUIT BREAKER (EK-C), position/exposure violation, unsupported
+//     timeframe (Madde 32), "late entry" (no defined threshold),
+//     repaint-sensitive final signal (N/A — nothing here repaints),
+//     critical calculation unavailable (already covered by Risk Engine's
+//     own NO STRUCTURAL STOP/NO TARGET ZONE statuses, not duplicated).
+//     Phase C, D, AND E are complete; Phase F is now substantially
+//     complete (Risk Engine, all five Setup Classifier archetypes, and the
+//     Veto Engine are all done — the engine can reach a real
+//     CONFIRMED_LONG/CONFIRMED_SHORT via any of the five setup types) per
+//     the Madde 121 roadmap; only the Final Decision Engine layer remains.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -336,7 +374,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.13.0-phaseF-veto-engine"
+var string ENGINE_VERSION = "v0.14.0-all-setup-archetypes"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -566,6 +604,20 @@ f_setupTypeLabel(SetupType t) =>
         SetupType.MEAN_REVERSION           => "MEAN REVERSION"
         =>                                     "NONE"
 
+// Generic stage every archetype's own state maps onto, so ONE state-machine
+// block (further below) can drive WATCH/SETUP/ENTRY_PENDING regardless of
+// WHICH archetype is currently active (Madde 111 — one mapping, not five).
+// READY covers BOTH "ENTRY_PENDING, still waiting" and "ENTRY_PENDING, fully
+// confirmed this bar" — the companion `setupPromotable` bool (computed
+// alongside, in the priority-resolution block) distinguishes the two only
+// where it matters: whether the Veto Engine's CONFIRMED promotion applies
+// THIS bar.
+enum SetupStage
+    IDLE
+    FORMING
+    CONFIRMED
+    READY
+
 // Madde 19 — SETUP ELIGIBILITY GATE / REGIME COMPATIBILITY: a breakout-retest
 // continuation is only eligible when its direction does not fight the
 // current regime. Pure function (no outer-scope references), so it stays
@@ -592,6 +644,78 @@ f_breakoutRetestEligible(BreakoutDirection dir, RegimeType regime) =>
 f_isActiveSetupState(BreakoutFSMState s) =>
     s == BreakoutFSMState.BREAKOUT_CANDIDATE or s == BreakoutFSMState.CONFIRMED_BREAKOUT or
      s == BreakoutFSMState.RETEST_PENDING or s == BreakoutFSMState.ENTRY
+
+// -----------------------------------------------------------------------------
+// REMAINING SETUP ARCHETYPES (Madde 18) — PULLBACK_CONTINUATION,
+// RANGE_REJECTION, FAILED_BREAKOUT_REVERSAL, MEAN_REVERSION. Per user
+// decision, built together against the now-existing Veto Engine (rather
+// than one at a time capped at ENTRY_PENDING with no consumer, the same
+// trap Risk Engine sat in before the Setup Classifier existed).
+//
+// FAILED_BREAKOUT_REVERSAL needs NO new state machine at all — it is a
+// direct reinterpretation of the Breakout FSM's OWN REVERSAL_CANDIDATE
+// state (Madde 111: maximum reuse). By the time REVERSAL_CANDIDATE is
+// reached, the retest was already price-rejected — touch AND trigger are
+// both already contained in that one state, so this archetype resolves
+// directly to "fully confirmed", no separate FORMING/CONFIRMED phase.
+//
+// PULLBACK_CONTINUATION, RANGE_REJECTION, and MEAN_REVERSION share ONE
+// generic, lightweight "reaction" state machine (ReactionFSMState below) —
+// touch a reference level/condition, wait for a reversal-style trigger
+// within a timeout, or fail if the level breaks first. This is genuinely
+// the SAME shape for all three (Madde 111 — one mechanism, not three
+// near-duplicates); what differs per archetype is ONLY which regime gates
+// it, which zone/condition counts as "touch", and which direction(s) are
+// considered. A SINGLE instance (not one per direction) is tracked per
+// archetype — eligibility already restricts each to at most one live
+// direction at a time (a range can't be touching its own support AND
+// resistance on the same bar; RSI can't be oversold AND overbought at
+// once), so a long/short-symmetric pair of instances (like Risk Engine's)
+// would just double the state for no benefit here.
+// -----------------------------------------------------------------------------
+enum ReactionFSMState
+    IDLE
+    PENDING
+    CONFIRMED
+    FAILED
+    STALE
+
+f_reactionLabel(ReactionFSMState s) =>
+    switch s
+        ReactionFSMState.PENDING   => "PENDING"
+        ReactionFSMState.CONFIRMED => "CONFIRMED"
+        ReactionFSMState.FAILED    => "FAILED"
+        ReactionFSMState.STALE     => "STALE"
+        =>                             "IDLE"
+
+// Idle-for-restart = a fresh PENDING may start from here — same "can a NEW
+// candidate start" concept as f_isIdleBreakoutState, kept as its own
+// function since ReactionFSMState is a different enum (Pine has no generic
+// functions across enum types).
+f_isIdleReactionState(ReactionFSMState s) =>
+    s == ReactionFSMState.IDLE or s == ReactionFSMState.CONFIRMED or
+     s == ReactionFSMState.FAILED or s == ReactionFSMState.STALE
+
+// Pure transition function — the caller (one block per archetype, below)
+// owns the `var` state and the bars-in-PENDING timeout counter, exactly
+// like every other stateful module in this script (Madde 33-34 pattern).
+f_reactionFSMStep(ReactionFSMState state, bool touch, bool triggerFired, bool invalidated, bool timedOut) =>
+    state == ReactionFSMState.PENDING ?
+         (invalidated ? ReactionFSMState.FAILED : triggerFired ? ReactionFSMState.CONFIRMED : timedOut ? ReactionFSMState.STALE : ReactionFSMState.PENDING) :
+     state == ReactionFSMState.CONFIRMED ?
+         (invalidated ? ReactionFSMState.FAILED : ReactionFSMState.CONFIRMED) :
+     touch ? ReactionFSMState.PENDING :
+     ReactionFSMState.IDLE
+
+// Madde 19 eligibility for FAILED_BREAKOUT_REVERSAL: the REVERSAL direction
+// (opposite of the failed breakout) must not fight the prevailing regime —
+// e.g. a failed UP breakout reversing DOWN while regime is still BULL_TREND
+// is exactly Madde 19's own "STRONG BULL TREND + MEAN REVERSION SHORT ->
+// not automatically valid" warning pattern.
+f_failedReversalEligible(BreakoutDirection failedDir, RegimeType regime) =>
+    failedDir == BreakoutDirection.UP   ? regime != RegimeType.BULL_TREND :
+     failedDir == BreakoutDirection.DOWN ? regime != RegimeType.BEAR_TREND :
+     false
 
 // -----------------------------------------------------------------------------
 // MOMENTUM ENUMS (Madde 23) — a STATE label, never "RSI 30 = LONG" style
@@ -775,6 +899,33 @@ f_zoneSummary(array<Zone> zones, int idx, float ef, float em, float es, float at
         bool conf = f_emaConfluence(z, ef, em, es, atrVal, confMult)
         result := fresh + "  " + str.tostring(z.zoneLow) + "-" + str.tostring(z.zoneHigh) + " (" + str.tostring(z.touchCount) + "x)" + (conf ? " EMA" : "")
     result
+
+// Zone-interaction helpers for the Setup Classifier's reaction-type
+// archetypes (Pullback Continuation, Range Rejection — see that section,
+// further below). Declared here (not near the other Setup Classifier
+// helpers earlier in the file) because they need the Zone type, which
+// isn't declared until just above this point. Same RE10045/eager-ternary
+// lesson as the Risk Engine's longStopRaw/shortStopRaw (see there) —
+// array.get() is only reached through an `if idx >= 0` guard, never
+// through a ternary that would evaluate it on -1.
+f_zoneTouch(array<Zone> zones, int idx, float barHigh, float barLow) =>
+    bool touched = false
+    if idx >= 0
+        Zone z = array.get(zones, idx)
+        touched := barHigh >= z.zoneLow and barLow <= z.zoneHigh
+    touched
+
+f_zoneBrokenBelow(array<Zone> zones, int idx, float c) =>
+    bool broken = false
+    if idx >= 0
+        broken := c < array.get(zones, idx).zoneLow
+    broken
+
+f_zoneBrokenAbove(array<Zone> zones, int idx, float c) =>
+    bool broken = false
+    if idx >= 0
+        broken := c > array.get(zones, idx).zoneHigh
+    broken
 
 // -----------------------------------------------------------------------------
 // FIBONACCI HELPERS (Madde 17) — computed only from the two most recently
@@ -1015,6 +1166,15 @@ i_leverage = input.float(1.0, "Leverage (1.0 = spot / no leverage)", minval = 1.
 grpVeto = "Veto Engine — hard vetoes block CONFIRMED, never hidden"
 i_entryPendingMaxBars = input.int(20, "ENTRY_PENDING Veto-Blocked Timeout (bars)", minval = 1, group = grpVeto,
      tooltip = "Madde 55 v3.1.1 EK — breakoutState ENTRY'ye ulaştığı ama hard veto yüzünden CONFIRMED'e geçemediği durumda, bu bar sayısından sonra FLAT'e döner (o zamana kadar ENTRY_PENDING'de görünür kalır).")
+
+// -----------------------------------------------------------------------------
+// INPUTS — REMAINING SETUP ARCHETYPES (Madde 18) — shared by Pullback
+// Continuation, Range Rejection, Mean Reversion's reaction FSM (see that
+// section for why one shared timeout, not three separate inputs, is enough).
+// -----------------------------------------------------------------------------
+grpSetupExtra = "Setup Classifier — Pullback / Range Rejection / Mean Reversion"
+i_reactionPendingMaxBars = input.int(10, "Reaction Setup PENDING Timeout (bars)", minval = 1, group = grpSetupExtra,
+     tooltip = "Zone/koşul dokunuşundan sonra tetikleyici (trigger) bu bar sayısı içinde gelmezse STALE olur.")
 
 grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
 i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
@@ -1672,27 +1832,176 @@ posSizeCompactText = "L " + (na(longPosSize) ? "N/A" : str.tostring(longPosSize,
 
 // -----------------------------------------------------------------------------
 // SETUP CLASSIFIER (Madde 18-19) — "setup-specific decision rules", Phase F.
-// Only BREAKOUT_RETEST is detected this turn (see the SetupType enum's
-// header comment for why); it reuses the Breakout FSM (Madde 20-21) as its
-// entire trigger/confirmation/invalidation/expiry machinery — no new state
-// machine invented (Madde 111). Eligibility (Madde 19) is computed by
+// BREAKOUT_RETEST reuses the Breakout FSM (Madde 20-21) as its entire
+// trigger/confirmation/invalidation/expiry machinery — no new state machine
+// invented (Madde 111). Eligibility (Madde 19) is computed by
 // f_breakoutRetestEligible above, purely from breakoutDir vs primaryRegime.
 // -----------------------------------------------------------------------------
 setupEligible = f_breakoutRetestEligible(breakoutDir, primaryRegime)
-setupType = setupEligible and f_isActiveSetupState(breakoutState) ? SetupType.BREAKOUT_RETEST : SetupType.NONE
 
 setupEligibilityText = breakoutDir == BreakoutDirection.NONE ? "N/A (no breakout attempt)" :
      setupEligible ? "ELIGIBLE (" + f_regimeLabel(primaryRegime) + ")" :
      "NOT ELIGIBLE (" + f_breakoutDirLabel(breakoutDir) + " vs " + f_regimeLabel(primaryRegime) + ", Madde 19)"
 
-setupText = f_setupTypeLabel(setupType) + (setupType == SetupType.NONE ? "" : " " + f_breakoutDirLabel(breakoutDir)) +
-     "  [" + setupEligibilityText + "]"
+// FAILED_BREAKOUT_REVERSAL (Madde 18) — pure reinterpretation of the
+// Breakout FSM's own REVERSAL_CANDIDATE state (see the REMAINING SETUP
+// ARCHETYPES header comment near f_failedReversalEligible). Reversal
+// direction = opposite of the failed breakout's own direction.
+failedReversalDir = breakoutDir == BreakoutDirection.UP ? BreakoutDirection.DOWN :
+     breakoutDir == BreakoutDirection.DOWN ? BreakoutDirection.UP : BreakoutDirection.NONE
+failedReversalEligible = breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE and
+     f_failedReversalEligible(breakoutDir, primaryRegime)
+
+// PULLBACK_CONTINUATION (Madde 18) — a pullback INTO a zone in the direction
+// of an established trend, followed by a reversal-style trigger resuming
+// that trend. Eligibility is re-checked LIVE every bar (pullbackDir vs
+// current structureBias/primaryRegime), same as setupEligible above, so a
+// regime flip mid-flight correctly de-eligibilizes it instead of freezing a
+// stale eligibility.
+var ReactionFSMState pullbackState = ReactionFSMState.IDLE
+var BreakoutDirection pullbackDir  = BreakoutDirection.NONE
+var int pullbackPendingBars = 0
+
+pullbackWantLong  = structureBias == StructureBias.BULLISH and primaryRegime == RegimeType.BULL_TREND
+pullbackWantShort = structureBias == StructureBias.BEARISH and primaryRegime == RegimeType.BEAR_TREND
+pullbackTouch = pullbackWantLong ? f_zoneTouch(supportZones, nearestSupIdx, high, low) :
+     pullbackWantShort ? f_zoneTouch(resistanceZones, nearestResIdx, high, low) : false
+pullbackTrigger = pullbackDir == BreakoutDirection.UP ?
+     (paBullEngulf or paHammerShape or paLowerRejection or paStrongCloseUp) and momDirection != MomentumDirection.BEARISH :
+     pullbackDir == BreakoutDirection.DOWN ?
+     (paBearEngulf or paStarShape or paUpperRejection or paStrongCloseDown) and momDirection != MomentumDirection.BULLISH :
+     false
+pullbackInvalidated = pullbackDir == BreakoutDirection.UP ? f_zoneBrokenBelow(supportZones, nearestSupIdx, close) :
+     pullbackDir == BreakoutDirection.DOWN ? f_zoneBrokenAbove(resistanceZones, nearestResIdx, close) : false
+
+if barstate.isconfirmed
+    pullbackPendingBars := pullbackState == ReactionFSMState.PENDING ? pullbackPendingBars + 1 : 0
+    pullbackTimedOut = pullbackPendingBars > i_reactionPendingMaxBars
+    pullbackTouchNow = pullbackTouch and (pullbackWantLong or pullbackWantShort)
+    if f_isIdleReactionState(pullbackState) and pullbackTouchNow
+        pullbackDir := pullbackWantLong ? BreakoutDirection.UP : BreakoutDirection.DOWN
+    pullbackState := f_reactionFSMStep(pullbackState, pullbackTouchNow, pullbackTrigger, pullbackInvalidated, pullbackTimedOut)
+
+pullbackActiveEligible = (pullbackState == ReactionFSMState.PENDING or pullbackState == ReactionFSMState.CONFIRMED) and
+     (pullbackDir == BreakoutDirection.UP ? pullbackWantLong : pullbackDir == BreakoutDirection.DOWN ? pullbackWantShort : false)
+
+// RANGE_REJECTION (Madde 18) — same reaction mechanism as Pullback
+// Continuation (Madde 111 — one mechanism, not near-duplicates), but gated
+// to RANGE regime only (Madde 19's own worked example) and open to EITHER
+// direction (a range has two edges, unlike a trend pullback).
+var ReactionFSMState rangeRejState = ReactionFSMState.IDLE
+var BreakoutDirection rangeRejDir  = BreakoutDirection.NONE
+var int rangeRejPendingBars = 0
+
+rangeRejRegimeOK  = primaryRegime == RegimeType.RANGE
+rangeRejTouchLong  = rangeRejRegimeOK and f_zoneTouch(supportZones, nearestSupIdx, high, low)
+rangeRejTouchShort = rangeRejRegimeOK and f_zoneTouch(resistanceZones, nearestResIdx, high, low)
+rangeRejTrigger = rangeRejDir == BreakoutDirection.UP ? (paBullEngulf or paHammerShape or paLowerRejection) :
+     rangeRejDir == BreakoutDirection.DOWN ? (paBearEngulf or paStarShape or paUpperRejection) :
+     false
+rangeRejInvalidated = rangeRejDir == BreakoutDirection.UP ? f_zoneBrokenBelow(supportZones, nearestSupIdx, close) :
+     rangeRejDir == BreakoutDirection.DOWN ? f_zoneBrokenAbove(resistanceZones, nearestResIdx, close) : false
+
+if barstate.isconfirmed
+    rangeRejPendingBars := rangeRejState == ReactionFSMState.PENDING ? rangeRejPendingBars + 1 : 0
+    rangeRejTimedOut = rangeRejPendingBars > i_reactionPendingMaxBars
+    rangeRejTouchNow = rangeRejTouchLong or rangeRejTouchShort
+    if f_isIdleReactionState(rangeRejState) and rangeRejTouchNow
+        rangeRejDir := rangeRejTouchLong ? BreakoutDirection.UP : BreakoutDirection.DOWN
+    rangeRejState := f_reactionFSMStep(rangeRejState, rangeRejTouchNow, rangeRejTrigger, rangeRejInvalidated, rangeRejTimedOut)
+
+rangeRejActiveEligible = (rangeRejState == ReactionFSMState.PENDING or rangeRejState == ReactionFSMState.CONFIRMED) and rangeRejRegimeOK
+
+// MEAN_REVERSION (Madde 18) — RSI-extreme based rather than zone-based
+// (genuine differentiation from Range Rejection, not a duplicate): "touch"
+// is RSI oversold/overbought (already-computed booleans, Momentum module,
+// Madde 111), "trigger" adds RSI turning back plus a reversal Price Action
+// pattern, "invalidated" is a new swing extreme in the adverse direction
+// (reusing the central swing function's own last-swing prices, Madde 14).
+var ReactionFSMState meanRevState = ReactionFSMState.IDLE
+var BreakoutDirection meanRevDir  = BreakoutDirection.NONE
+var int meanRevPendingBars = 0
+
+meanRevRegimeOK  = primaryRegime == RegimeType.RANGE or primaryRegime == RegimeType.TRANSITION
+meanRevTouchLong  = meanRevRegimeOK and rsiOversoldNow
+meanRevTouchShort = meanRevRegimeOK and rsiOverboughtNow
+meanRevTrigger = meanRevDir == BreakoutDirection.UP ? (rsiRising and (paBullEngulf or paHammerShape or paLowerRejection)) :
+     meanRevDir == BreakoutDirection.DOWN ? (rsiFalling and (paBearEngulf or paStarShape or paUpperRejection)) :
+     false
+meanRevInvalidated = meanRevDir == BreakoutDirection.UP ? (not na(lastSwingLowPrice) and close < lastSwingLowPrice) :
+     meanRevDir == BreakoutDirection.DOWN ? (not na(lastSwingHighPrice) and close > lastSwingHighPrice) : false
+
+if barstate.isconfirmed
+    meanRevPendingBars := meanRevState == ReactionFSMState.PENDING ? meanRevPendingBars + 1 : 0
+    meanRevTimedOut = meanRevPendingBars > i_reactionPendingMaxBars
+    meanRevTouchNow = meanRevTouchLong or meanRevTouchShort
+    if f_isIdleReactionState(meanRevState) and meanRevTouchNow
+        meanRevDir := meanRevTouchLong ? BreakoutDirection.UP : BreakoutDirection.DOWN
+    meanRevState := f_reactionFSMStep(meanRevState, meanRevTouchNow, meanRevTrigger, meanRevInvalidated, meanRevTimedOut)
+
+meanRevActiveEligible = (meanRevState == ReactionFSMState.PENDING or meanRevState == ReactionFSMState.CONFIRMED) and meanRevRegimeOK
+
+// PRIORITY RESOLUTION — exactly ONE archetype drives the state machine at a
+// time (Madde 51 v3.1.1 EK single-state invariant, satisfied by
+// construction). Order: BREAKOUT_RETEST > FAILED_BREAKOUT_REVERSAL >
+// PULLBACK_CONTINUATION > RANGE_REJECTION > MEAN_REVERSION —
+// trend/breakout-oriented setups take priority over range/reversion ones,
+// matching this project's OWN backtest research (README, Adım 3: Donchian
+// trend-following demonstrably more robust than mean-reversion for BTC).
+// Regime-gating already keeps these mostly mutually exclusive in practice;
+// this order only matters for the rarer TRANSITION-regime overlap.
+SetupType setupType = SetupType.NONE
+SetupStage setupStage = SetupStage.IDLE
+BreakoutDirection setupDir = BreakoutDirection.NONE
+bool setupPromotable = false
+
+if setupEligible and f_isActiveSetupState(breakoutState)
+    setupType := SetupType.BREAKOUT_RETEST
+    setupDir := breakoutDir
+    setupStage := breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE ? SetupStage.FORMING :
+         breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT ? SetupStage.CONFIRMED :
+         SetupStage.READY
+    setupPromotable := breakoutState == BreakoutFSMState.ENTRY
+else if failedReversalEligible
+    setupType := SetupType.FAILED_BREAKOUT_REVERSAL
+    setupDir := failedReversalDir
+    setupStage := SetupStage.READY
+    setupPromotable := true
+else if pullbackActiveEligible
+    setupType := SetupType.PULLBACK_CONTINUATION
+    setupDir := pullbackDir
+    setupStage := pullbackState == ReactionFSMState.PENDING ? SetupStage.FORMING : SetupStage.READY
+    setupPromotable := pullbackState == ReactionFSMState.CONFIRMED
+else if rangeRejActiveEligible
+    setupType := SetupType.RANGE_REJECTION
+    setupDir := rangeRejDir
+    setupStage := rangeRejState == ReactionFSMState.PENDING ? SetupStage.FORMING : SetupStage.READY
+    setupPromotable := rangeRejState == ReactionFSMState.CONFIRMED
+else if meanRevActiveEligible
+    setupType := SetupType.MEAN_REVERSION
+    setupDir := meanRevDir
+    setupStage := meanRevState == ReactionFSMState.PENDING ? SetupStage.FORMING : SetupStage.READY
+    setupPromotable := meanRevState == ReactionFSMState.CONFIRMED
+
+setupText = setupType != SetupType.NONE ?
+     f_setupTypeLabel(setupType) + " " + f_breakoutDirLabel(setupDir) + "  [ELIGIBLE]" :
+     (f_isActiveSetupState(breakoutState) and not setupEligible) ?
+     "BREAKOUT ATTEMPT (" + f_breakoutDirLabel(breakoutDir) + ")  [" + setupEligibilityText + "]" :
+     "NONE"
+
+// Other archetypes' raw FSM state, even when NOT the one currently winning
+// priority resolution — otherwise a forming Pullback/Range/Mean-Reversion
+// setup would be entirely invisible whenever Breakout Retest happens to be
+// active at the same time (Madde 139/140 — no silent behavior).
+otherSetupsText = "PB:" + f_reactionLabel(pullbackState) + (pullbackDir == BreakoutDirection.NONE ? "" : "(" + f_breakoutDirLabel(pullbackDir) + ")") +
+     "  RR:" + f_reactionLabel(rangeRejState) + (rangeRejDir == BreakoutDirection.NONE ? "" : "(" + f_breakoutDirLabel(rangeRejDir) + ")") +
+     "  MR:" + f_reactionLabel(meanRevState) + (meanRevDir == BreakoutDirection.NONE ? "" : "(" + f_breakoutDirLabel(meanRevDir) + ")")
 
 // Whichever Risk Engine side actually corresponds to this live setup's
 // direction (Madde 111 — reuse the already-computed LONG/SHORT numbers,
 // don't recompute a third time).
-setupRiskText = setupType != SetupType.BREAKOUT_RETEST ? "N/A" :
-     breakoutDir == BreakoutDirection.UP ? riskLongText : riskShortText
+setupRiskText = setupType == SetupType.NONE ? "N/A" :
+     setupDir == BreakoutDirection.UP ? riskLongText : riskShortText
 
 // -----------------------------------------------------------------------------
 // VETO ENGINE (Madde 52-53) — Phase F, the piece that finally lets the chain
@@ -1725,10 +2034,10 @@ setupRiskText = setupType != SetupType.BREAKOUT_RETEST ? "N/A" :
 // its current WATCH/SETUP/ENTRY_PENDING state with the reason shown in the
 // VETO diagnostics row, only falling back to FLAT if fully expired.
 // -----------------------------------------------------------------------------
-liveRiskStatus = breakoutDir == BreakoutDirection.UP ? longStatus : shortStatus
-riskInvalid = setupType == SetupType.BREAKOUT_RETEST and liveRiskStatus != "OK"
-structureInvalid = setupType == SetupType.BREAKOUT_RETEST and mtfAgreement == MtfAgreement.CONFLICT
-setupInvalid = setupType != SetupType.BREAKOUT_RETEST
+liveRiskStatus = setupDir == BreakoutDirection.UP ? longStatus : shortStatus
+riskInvalid = setupType != SetupType.NONE and liveRiskStatus != "OK"
+structureInvalid = setupType != SetupType.NONE and mtfAgreement == MtfAgreement.CONFLICT
+setupInvalid = setupType == SetupType.NONE
 
 hardVetoReasons = array.new<string>()
 if riskInvalid
@@ -1736,7 +2045,7 @@ if riskInvalid
 if structureInvalid
     array.push(hardVetoReasons, "STRUCTURE INVALID (severe MTF conflict)")
 if setupInvalid
-    array.push(hardVetoReasons, "SETUP INVALID (" + (not setupEligible ? "not eligible" : "no active setup") + ")")
+    array.push(hardVetoReasons, "SETUP INVALID (no active/eligible setup, Madde 18-19)")
 hardVetoActive = array.size(hardVetoReasons) > 0
 
 softPenalties = array.new<string>()
@@ -1756,7 +2065,7 @@ hardVetoText = array.size(hardVetoReasons) > 0 ? array.join(hardVetoReasons, "; 
 // Full text collapses to a plain "N/A" while nothing is even attempting a
 // setup — showing "HARD VETO: SETUP INVALID" through every idle FLAT bar
 // would be technically true but pure noise (Madde 10).
-vetoText = breakoutDir == BreakoutDirection.NONE ? "N/A (no active setup)" :
+vetoText = setupType == SetupType.NONE ? "N/A (no active setup)" :
      hardVetoActive ? "HARD VETO: " + hardVetoText + (array.size(softPenalties) > 0 ? "  [soft: " + softPenaltyText + "]" : "") :
      array.size(softPenalties) > 0 ? "no hard veto  [soft: " + softPenaltyText + "]" :
      "CLEAN"
@@ -1765,36 +2074,39 @@ vetoText = breakoutDir == BreakoutDirection.NONE ? "N/A (no active setup)" :
 // STATE MACHINE — WATCH/SETUP/ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT
 // (Madde 18-19, 52-53, 55). Second confirmed-bar block (the first, above,
 // only owns the DATA_INVALID gate — see its comment) since it needs
-// breakoutState/setupEligible/hardVetoActive, all computed later in the
-// script than that block. A structural ENTRY (retest accepted) becomes a
-// real CONFIRMED_LONG/CONFIRMED_SHORT only when the Veto Engine has NO hard
-// veto — this is the first module where that transition can happen at all.
-// If hard-vetoed, state stays at ENTRY_PENDING (never silently hidden, see
-// VETO row) until i_entryPendingMaxBars bars pass, then reverts to FLAT
-// (Madde 55 v3.1.1 EK's previously-open question: WATCH or FLAT — FLAT
-// chosen for consistency with how FAILED_BREAKOUT/REVERSAL_CANDIDATE/STALE
-// already all resolve to FLAT, Madde 10 simplicity). The single
-// currentState variable can only ever hold ONE value, so CONFIRMED_LONG
-// and CONFIRMED_SHORT can structurally never coexist on the same bar
-// (Madde 51 v3.1.1 EK invariant, satisfied by construction).
+// setupType/setupStage/setupPromotable/hardVetoActive, all computed later
+// in the script than that block. Drives ONLY off the Setup Classifier's
+// generic setupStage/setupPromotable — genuinely archetype-agnostic, so
+// whichever of the five archetypes won priority resolution (BREAKOUT_RETEST
+// or one of the other four) is handled identically here (Madde 111). A
+// setup reaching its own "fully confirmed" moment (setupPromotable) becomes
+// a real CONFIRMED_LONG/CONFIRMED_SHORT only when the Veto Engine has NO
+// hard veto — this is the module where that transition first became
+// possible at all. If hard-vetoed, state stays at ENTRY_PENDING (never
+// silently hidden, see VETO row) until i_entryPendingMaxBars bars pass,
+// then reverts to FLAT (Madde 55 v3.1.1 EK's previously-open question:
+// WATCH or FLAT — FLAT chosen for consistency with how a failed/stale
+// setup already resolves, Madde 10 simplicity). The single currentState
+// variable can only ever hold ONE value, so CONFIRMED_LONG and
+// CONFIRMED_SHORT can structurally never coexist on the same bar (Madde 51
+// v3.1.1 EK invariant, satisfied by construction).
 // -----------------------------------------------------------------------------
 var int entryPendingBlockedBars = 0
 bool newlyConfirmed = false
 
 if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
-    provisionalState = not setupEligible ? EngineState.FLAT :
-         breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE ? EngineState.WATCH :
-         breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT ? EngineState.SETUP :
-         breakoutState == BreakoutFSMState.RETEST_PENDING ? EngineState.ENTRY_PENDING :
-         breakoutState == BreakoutFSMState.ENTRY ? EngineState.ENTRY_PENDING :
+    provisionalState = setupType == SetupType.NONE ? EngineState.FLAT :
+         setupStage == SetupStage.FORMING ? EngineState.WATCH :
+         setupStage == SetupStage.CONFIRMED ? EngineState.SETUP :
+         setupStage == SetupStage.READY ? EngineState.ENTRY_PENDING :
          EngineState.FLAT
 
-    if provisionalState == EngineState.ENTRY_PENDING and breakoutState == BreakoutFSMState.ENTRY and not hardVetoActive
+    if provisionalState == EngineState.ENTRY_PENDING and setupPromotable and not hardVetoActive
         wasAlreadyConfirmed = currentState == EngineState.CONFIRMED_LONG or currentState == EngineState.CONFIRMED_SHORT
-        currentState := breakoutDir == BreakoutDirection.UP ? EngineState.CONFIRMED_LONG : EngineState.CONFIRMED_SHORT
+        currentState := setupDir == BreakoutDirection.UP ? EngineState.CONFIRMED_LONG : EngineState.CONFIRMED_SHORT
         newlyConfirmed := not wasAlreadyConfirmed
         entryPendingBlockedBars := 0
-    else if provisionalState == EngineState.ENTRY_PENDING and breakoutState == BreakoutFSMState.ENTRY and hardVetoActive
+    else if provisionalState == EngineState.ENTRY_PENDING and setupPromotable and hardVetoActive
         entryPendingBlockedBars := entryPendingBlockedBars + 1
         currentState := entryPendingBlockedBars > i_entryPendingMaxBars ? EngineState.FLAT : EngineState.ENTRY_PENDING
     else
@@ -1829,7 +2141,7 @@ reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
 
 // Row count depends on i_diagDetail, resolved once at table creation (inputs
 // are known constants throughout the run, so this ternary is safe here).
-var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 20 : 44, border_width = 1)
+var table debugTable = table.new(position.top_right, 2, i_diagDetail == "COMPACT" ? 20 : 45, border_width = 1)
 
 if i_showDebug and barstate.islast and i_diagDetail == "COMPACT"
     // Curated 10-row summary — added per user request once the FULL table
@@ -2053,17 +2365,20 @@ if i_showDebug and barstate.islast and i_diagDetail == "FULL"
     table.cell(debugTable, 0, 39, "SETUP CLASSIFIER", text_size = size.tiny, text_halign = text.align_left)
     table.cell(debugTable, 1, 39, setupText, text_size = size.tiny, text_color = setupType != SetupType.NONE ? color.yellow : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 40, "SETUP RISK", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 40, setupRiskText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 40, "OTHER SETUPS", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 40, otherSetupsText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 41, "VETO (HARD)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 41, hardVetoActive ? hardVetoText : (breakoutDir == BreakoutDirection.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = hardVetoActive ? color.red : color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 41, "SETUP RISK", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 41, setupRiskText, text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 42, "VETO (SOFT)", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 42, array.size(softPenalties) > 0 ? softPenaltyText : (breakoutDir == BreakoutDirection.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 42, "VETO (HARD)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 42, hardVetoActive ? hardVetoText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = hardVetoActive ? color.red : color.gray, text_halign = text.align_left)
 
-    table.cell(debugTable, 0, 43, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
-    table.cell(debugTable, 1, 43, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
+    table.cell(debugTable, 0, 43, "VETO (SOFT)", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 43, array.size(softPenalties) > 0 ? softPenaltyText : (setupType == SetupType.NONE ? "N/A" : "none"), text_size = size.tiny, text_color = array.size(softPenalties) > 0 ? color.orange : color.gray, text_halign = text.align_left)
+
+    table.cell(debugTable, 0, 44, "REQUEST BUDGET", text_size = size.tiny, text_halign = text.align_left)
+    table.cell(debugTable, 1, 44, "1 / 40 (MTF: 1 tuple request.security call)", text_size = size.tiny, text_color = color.gray, text_halign = text.align_left)
 
 // -----------------------------------------------------------------------------
 // VISUAL CONFIRMATION (minimal — no panel/alert module yet)
