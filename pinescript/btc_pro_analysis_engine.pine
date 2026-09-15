@@ -1,0 +1,2718 @@
+//@version=6
+
+// =============================================================================
+// BTC PRO ANALYSIS ENGINE
+// PHASE A (Data Gate) + PHASE B (Market Regime) + PHASE C (Structure + Zones +
+// Fibonacci + Breakout/Retest FSM) + PHASE D (Price Action + Momentum +
+// Participation) — built incrementally, one module at a time, each
+// confirmed working before the next is added (Madde 122).
+//
+// MODULES INCLUDED SO FAR:
+//   1. DATA GATE + SYMBOL VALIDATION + STATE MACHINE SKELETON (Madde 7, 1, 8, 55)
+//      — confirmed working by user on OKX:BTCUSDT and TVC:DEU40.
+//   2. MARKET REGIME + VOLATILITY REGIME + REGIME CONFIDENCE (Madde 9, 10, 11)
+//      — confirmed working by user (TRANSITION/LOW confidence in a chop zone;
+//      persistence/hysteresis held through Replay without flip-flopping).
+//   3. MARKET STRUCTURE — CENTRAL CONFIRMED-SWING FUNCTION + HH/HL/LH/LL +
+//      BOS/CHoCH (Madde 14, 61) — confirmed working by user, including that
+//      swing markers only appear ~pivotRight bars after the fact (KNOWN_TIME
+//      vs SWING_TIME, Madde 14) and are stable across reload/replay (no repaint).
+//   4. SUPPORT/RESISTANCE ZONE ENGINE + CLUSTERING (Madde 15, 16) — confirmed
+//      working by user (also caught and fixed an empty-array crash, v0.4.1).
+//   5. FIBONACCI ENGINE (Madde 17) — confirmed working by user (levels
+//      consistent with LAST SWING HIGH/LOW).
+//   6. BREAKOUT / RETEST STATE MACHINE (Madde 20-21) — last remaining item in
+//      the Phase C roadmap (Madde 121). Reuses the SAME crossedAboveLastHigh/
+//      crossedBelowLastLow break-of-level signals already computed for
+//      Structure's BOS/CHoCH (no new level logic invented, Madde 111). States:
+//      PRE_BREAKOUT -> BREAKOUT_CANDIDATE -> CONFIRMED_BREAKOUT (displacement
+//      >= N x ATR) -> RETEST_PENDING (price returns near the level) ->
+//      RETEST_ACCEPTED/ENTRY, or the failure path BREAKOUT_CANDIDATE/
+//      CONFIRMED_BREAKOUT/RETEST_PENDING -> FAILED_BREAKOUT ->
+//      REVERSAL_CANDIDATE, or STALE if a stage times out (Madde 20). Per
+//      Madde 21, "breakout quality" factors that belong to Participation/
+//      Momentum (volume, momentum confirmation) are NOT fabricated here since
+//      those modules don't exist yet — this FSM only uses STRUCTURE-family
+//      evidence (price vs. level). Reaching the ENTRY state is a structural
+//      label, NOT a trading signal — no alert/decision logic is wired to it.
+//
+//   Also, per user request: the temporary diagnostics table now has a
+//   COMPACT/FULL toggle (Diagnostics Detail input) and smaller text
+//   (text_size=tiny everywhere), since it was growing every module and risked
+//   becoming unusable on small screens before the real Madde 114 panel exists.
+//
+//   7. PRICE ACTION ENGINE (Madde 22) — first item of Phase D (Confirmation).
+//      Mathematical, not a pattern zoo: BODY/RANGE, WICK/BODY, CLOSE
+//      LOCATION, RANGE/ATR are the primitives (Madde 22's own instruction),
+//      and only a minimal named-pattern set is derived from them: bullish/
+//      bearish engulfing, hammer/shooting-star shape, upper/lower rejection
+//      wick, inside/outside bar, strong close up/down. "Breakout candle
+//      quality" was intentionally NOT rebuilt as a separate metric — it
+//      would just reuse these same body/wick/range primitives that the
+//      Breakout FSM's displacement check already covers structurally
+//      (Madde 111: don't rebuild redundant concepts). Snapshotted on
+//      confirmed bars only (Madde 33-34), tagged EvidenceFamily.TRIGGER
+//      (Madde 64 lists "rejection", "reclaim", "close confirmation" as
+//      trigger examples — Price Action patterns here are that same kind of
+//      evidence, not a new family). Price Action is explicitly NOT an entry
+//      by itself (Madde 22): no Setup/Trigger/Decision engine consumes it yet.
+//
+//   8. MOMENTUM ENGINE (Madde 23) — second item of Phase D. Uses RSI + MACD
+//      histogram only, NOT also Stochastic/CCI as Madde 23 casually lists —
+//      those would be highly redundant with RSI in the same MOMENTUM family
+//      (Madde 6 double-counting ban). The goal is a STATE label
+//      (ACCELERATING/DECELERATING/RECOVERING/WEAKENING/NEUTRAL), never "RSI
+//      30 = LONG" (Madde 23 explicit prohibition, honored: RSI/MACD values
+//      never feed any direction/entry logic here, only the state label).
+//      Divergence detection reuses the SAME central confirmed-swing function
+//      (Madde 14 v3.1 EK) — RSI is snapshotted at each confirmed swing bar
+//      (inside Structure's existing swing-registration blocks, a small
+//      addition, not a rewrite) and compared HH-vs-lower-RSI /
+//      LL-vs-higher-RSI. Reported as DIVERGENCE DETECTED, never as a
+//      guaranteed reversal (Madde 23). Tagged EvidenceFamily.MOMENTUM.
+//
+//   9. PARTICIPATION ENGINE (Madde 24) — third and last Phase D item, so
+//      Phase D is now complete per the Madde 121 roadmap. Uses RVOL
+//      (volume / N-bar average) + OBV slope alignment with price direction
+//      only, NOT every volume-flavored indicator Madde 24 casually lists —
+//      OBV, price-volume alignment and breakout volume all measure closely
+//      related information, so piling them on would double-count within this
+//      one PARTICIPATION family (Madde 6). VWAP is a FIXED N-bar ROLLING
+//      average (sum(close*volume)/sum(volume) over N bars via ta.sma ratio),
+//      deliberately NOT TradingView's session-anchored ta.vwap — Madde 24
+//      explicitly warns that BTC is 24/7, so no exchange "session open"
+//      concept is assumed (consistent with Madde 1/107's BIST-session ban).
+//      STATE label (NORMAL/EXPANDING/CONTRACTING/CONFIRMING/DIVERGING) from
+//      RVOL magnitude x OBV/price alignment. Tagged
+//      EvidenceFamily.PARTICIPATION. BACKLOG (per user, not built): zone
+//      "polarity flip" (a broken resistance zone re-evaluated as a support
+//      candidate) — deliberately not in Madde 15-16's spec, revisit when
+//      Location/Zone Quality (Madde 62-63) or the Setup Classifier is built,
+//      where its actual effect can be measured (Madde 111).
+//
+//  10. MTF REFINEMENT (Madde 28-32) — first item of Phase E (Context).
+//      Relative Strength (Madde 27's OTHER Phase E item) is deliberately NOT
+//      built this turn (Madde 122: one module per turn) — it is explicitly
+//      "not mandatory for a BTC-only system" per Madde 27, and needs a user
+//      decision on which benchmark to use, so it is deferred to its own
+//      turn. This module requests exactly ONE higher timeframe (HTF), chosen
+//      via a simple, explainable chart-TF -> HTF map (Madde 28's default
+//      role table, collapsed to "one level up" from the current chart:
+//      <=15m->1H, <=1H->4H, <=4H->1D, >=1D->N/A, no higher default role) or
+//      a MANUAL override input; if the manual HTF is not actually higher
+//      than the chart TF, MTF is reported UNAVAILABLE rather than showing
+//      fabricated data (Madde 139/140). Exactly ONE request.security() call
+//      is used, bundling THREE values as a single tuple (HTF close, HTF EMA,
+//      HTF EMA N-bars-earlier for slope) — Madde 110's "prefer one tuple
+//      request over several separate calls" — so this module costs exactly
+//      ONE request.*() slot (0/40 -> 1/40, see REQUEST BUDGET diagnostics
+//      row). Non-repainting per Madde 29: EVERY value inside the tuple is
+//      offset with `[1]` (the slope value with `[lookback+1]`) AND the call
+//      uses `lookahead = barmerge.lookahead_on` — the official TradingView
+//      non-repainting HTF pattern (confirmed HTF bar data only, one HTF bar
+//      of lag accepted on purpose). Bare `lookahead_on` without offsetting
+//      the expression is explicitly forbidden by Madde 29 and is NOT used
+//      anywhere in this script. Produces an HTF_BIAS (BULLISH/BEARISH/
+//      NEUTRAL, from simple HTF close-vs-EMA + EMA-slope agreement, Madde 10
+//      — no re-derivation of the full Regime/Structure engines on the HTF,
+//      which would be fragile/expensive to evaluate via request.security)
+//      and an MTF_AGREEMENT versus the chart's OWN structureBias (AGREE/
+//      CONFLICT/NEUTRAL/UNAVAILABLE). Tagged EvidenceFamily.MTF. Per Madde
+//      31, MTF agreement/conflict here is CONTEXT ONLY — it does NOT
+//      produce any automatic LONG/SHORT, and no timeframe gets its own
+//      independent score (no scoring engine exists yet regardless).
+//
+//      Phase E is now COMPLETE. Relative Strength (Madde 27, Phase E's
+//      other item) was explicitly SKIPPED by user decision, not merely
+//      postponed: Madde 27 itself says RS is not mandatory for a BTC-only
+//      system, and rather than guess a benchmark the user was asked to pick
+//      one (BTC Dominance / BTC-vs-TOTAL2 / macro DXY-SPX / skip) and chose
+//      to skip it and move straight to Phase F. No RS code, enum, or
+//      diagnostics row exists in this script — RS is simply absent, not
+//      faked as a permanent "UNAVAILABLE" placeholder (Madde 139/140: don't
+//      build UI for a feature that was declined, that would itself be a
+//      kind of fake signal of completeness).
+//
+//  11. RISK ENGINE (Madde 44-49) — first item of Phase F (Decision). A
+//      DIAGNOSTIC CALCULATOR only, exactly like Fibonacci/Zone — it is NOT
+//      wired to any entry/trade signal because no Setup Classifier exists
+//      yet (Madde 18-19, still not built) to define what a live "setup"
+//      even is. Instead of building unused generic formulas with no
+//      consumer, or fabricating a fake live signal, this computes what the
+//      stop/target/R:R/position size WOULD be for a structural LONG and a
+//      structural SHORT idea anchored on price right now, reusing the
+//      SAME nearest-zone lookups the Zone module already computed
+//      (nearestResIdx/nearestSupIdx, Madde 111 — no new zone search).
+//      Stop hierarchy (Madde 45): STRUCTURAL INVALIDATION (nearest opposing
+//      zone edge, or the last confirmed swing if no zone exists yet) +
+//      ATR BUFFER, then checked against MAX ACCEPTABLE STOP DISTANCE — a
+//      stop is never a "random %". If no structural level exists at all,
+//      the result is explicitly "NO STRUCTURAL STOP", never a fabricated
+//      number (Madde 45: "mantıklı stop yoksa NO TRADE", Madde 139/140).
+//      Target (Madde 46) is the near edge of the opposing zone, not a blind
+//      "entry + 2 ATR" (Madde 46 explicit prohibition). R:R (Madde 47) is
+//      compared against a minimum (default 1.5, stated in Madde 47 itself
+//      as a starting hypothesis to validate later, NOT to optimize now,
+//      Madde 10/47). Position sizing (Madde 48): Risk Amount = Equity x
+//      Risk%, Position Size = Risk Amount / Stop Distance; leverage
+//      defaults to 1.0 (spot/no leverage) and is never assumed higher
+//      without the user explicitly setting it (Madde 48 explicit rule).
+//      Tagged EvidenceFamily.RISK. Shown for BOTH long and short structural
+//      ideas simultaneously (Madde 50 long/short symmetry audit) — neither
+//      side is privileged.
+//
+//  12. SETUP CLASSIFIER (Madde 18-19) — "setup-specific decision rules",
+//      second item of Phase F, per user decision (Position Sizing's own
+//      formula already exists inside the Risk Engine above and works;
+//      Madde 48's spot/perpetual/MAX EXPOSURE nuances are deliberately
+//      postponed until real setups/positions exist to test them against,
+//      i.e. after the Veto Engine). Of Madde 18's five named archetypes
+//      (PULLBACK CONTINUATION, BREAKOUT RETEST, RANGE REJECTION, FAILED
+//      BREAKOUT REVERSAL, MEAN REVERSION), only BREAKOUT RETEST is
+//      implemented — it reuses the Breakout FSM (Madde 20-21) as its ENTIRE
+//      trigger/confirmation/invalidation/expiry machinery (Madde 111 — no
+//      new state machine invented); the other four are declared in the
+//      SetupType enum (documenting the full taxonomy) but have no detection
+//      logic, so the classifier simply never outputs them. Eligibility
+//      (Madde 19, REGIME COMPATIBILITY) is a pure function of breakoutDir
+//      vs. primaryRegime — UP eligible in BULL_TREND/TRANSITION, DOWN
+//      eligible in BEAR_TREND/TRANSITION, neither eligible in RANGE (Madde
+//      19's own worked example pairs RANGE with rejection/mean-reversion,
+//      not breakout continuation). This FINALLY wires the state machine
+//      beyond DATA_INVALID/FLAT: FLAT -> WATCH (BREAKOUT_CANDIDATE) -> SETUP
+//      (CONFIRMED_BREAKOUT) -> ENTRY_PENDING (RETEST_PENDING or ENTRY),
+//      always gated by eligibility. At this point (v0.12.x) it was still
+//      capped at ENTRY_PENDING pending the Veto Engine — see module 13.
+//
+//  13. VETO ENGINE (Madde 52-53) — per user decision, built next instead of
+//      the remaining 4 setup archetypes, so the ALREADY-BUILT chain
+//      (Regime -> Structure -> Zone -> Breakout FSM -> Setup Classifier ->
+//      Risk Engine) could reach a real CONFIRMED_LONG/CONFIRMED_SHORT for
+//      the first time, end-to-end, before breadth is added (the remaining
+//      archetypes would otherwise stay stuck at ENTRY_PENDING just like
+//      Risk Engine sat unused before the Setup Classifier existed). Runs
+//      independently of score (Madde 52 — trivial, no scoring engine
+//      exists). Implements only the HARD VETO / SOFT PENALTY categories
+//      this script has real evidence for (Madde 139/140 — no fabricated
+//      EXECUTION INVALID / LEVERAGE CASCADE / ACCOUNT CIRCUIT BREAKER /
+//      position-exposure checks, none of which exist yet), in Madde 53's
+//      precedence order: RISK INVALID (the live setup's Risk Engine status
+//      != OK — reuses f_riskCalc, Madde 111), STRUCTURE INVALID (severe
+//      MTF conflict, mtfAgreement == CONFLICT), SETUP INVALID (not
+//      eligible or FSM failed/idle). SOFT PENALTIES (weak participation,
+//      weak momentum, MTF NEUTRAL, low regime confidence, elevated
+//      volatility) are informational only, never block CONFIRMED. Per
+//      explicit user instruction: no new magic-number threshold is
+//      hardcoded — R:R is already i_minRR (Risk Engine's own input), and
+//      the one new threshold this module adds (the ENTRY_PENDING
+//      veto-blocked timeout, Madde 55 v3.1.1 EK, previously an explicitly
+//      open question) is i_entryPendingMaxBars, a real input. A
+//      hard-vetoed setup is NEVER silently hidden — it stays visible at
+//      ENTRY_PENDING with the reason in the VETO row until the timeout
+//      expires (then reverts to FLAT, same as a failed/stale breakout).
+//      currentState can only ever hold one value, so CONFIRMED_LONG and
+//      CONFIRMED_SHORT structurally cannot coexist on the same bar (Madde
+//      51 v3.1.1 EK invariant, satisfied by construction, not by an
+//      explicit check). This is Phase F's most consequential module so
+//      far: the engine can now, for the very first time, reach a real
+//      CONFIRMED_LONG/CONFIRMED_SHORT rather than capping at ENTRY_PENDING.
+//
+//  14. REMAINING SETUP ARCHETYPES (Madde 18) — per user decision, all four
+//      built together in one turn against the now-existing Veto Engine,
+//      instead of one at a time capped at ENTRY_PENDING with no consumer
+//      (the same trap Risk Engine sat in before the Setup Classifier
+//      existed). FAILED_BREAKOUT_REVERSAL needs NO new state machine — a
+//      direct reinterpretation of the Breakout FSM's own REVERSAL_CANDIDATE
+//      state (Madde 111), reversal direction = opposite of the failed
+//      breakout's own direction, eligible when that reversal direction
+//      does not fight the prevailing regime (Madde 19). PULLBACK_
+//      CONTINUATION, RANGE_REJECTION, and MEAN_REVERSION share ONE generic,
+//      lightweight "reaction" state machine (ReactionFSMState: IDLE ->
+//      PENDING -> CONFIRMED, or FAILED/STALE) — touch a reference
+//      level/condition, wait for a reversal-style trigger within
+//      i_reactionPendingMaxBars bars, or fail if the level breaks first
+//      (Madde 111 — one mechanism reused three times with different
+//      eligibility/touch/trigger conditions, not three near-duplicate
+//      FSMs): Pullback Continuation touches the nearest support/resistance
+//      zone in the direction of an established trend (BULL_TREND/
+//      BEAR_TREND only); Range Rejection touches either zone edge, gated
+//      to RANGE regime only (Madde 19's own worked example); Mean
+//      Reversion uses RSI oversold/overbought (already-computed booleans)
+//      instead of a zone touch — genuine differentiation from Range
+//      Rejection, not a duplicate — gated to RANGE/TRANSITION. A PRIORITY
+//      order (BREAKOUT_RETEST > FAILED_BREAKOUT_REVERSAL > PULLBACK_
+//      CONTINUATION > RANGE_REJECTION > MEAN_REVERSION, trend/breakout
+//      setups ranked above range/reversion ones — consistent with this
+//      project's own backtest research, README Adım 3: Donchian
+//      trend-following demonstrably more robust than mean-reversion for
+//      BTC) resolves the rare case where more than one is simultaneously
+//      eligible (regime-gating already keeps them mostly exclusive). The
+//      Setup Classifier, Risk Engine, Veto Engine, and state machine are
+//      now genuinely archetype-agnostic — driven by the generic
+//      setupType/setupStage/setupDir/setupPromotable, not by
+//      Breakout-FSM-specific fields — so all five archetypes reach
+//      CONFIRMED_LONG/CONFIRMED_SHORT through the exact same veto-gated
+//      path (Madde 111, no separate decision logic per archetype). A new
+//      OTHER SETUPS diagnostics row (FULL only) shows the non-winning
+//      archetypes' raw FSM state, so a forming Pullback/Range/Mean-
+//      Reversion setup is never invisible just because Breakout Retest
+//      happens to be active at the same time (Madde 139/140).
+//
+//  15. SIGNAL QUALITY GATE (Madde 37 v3.1 EK) + diagnostics table split.
+//      "REGIME ACCEPTABLE" is now the FULL v3.1 EK definition: regime-type
+//      compatibility (already inside each archetype's eligibility, Madde
+//      19) PLUS regimeConfidence >= MEDIUM. When confidence is LOW, the
+//      spec is explicit — "en fazla WATCH" (at most WATCH) — so setupStage
+//      is clamped to FORMING (never CONFIRMED/READY) regardless of how far
+//      the underlying FSM progressed, and this is surfaced as a hard-veto
+//      reason (never silently hidden, same principle as every other veto).
+//      This was a real, explicitly specified threshold (MEDIUM, the
+//      existing ConfidenceLevel enum), unlike Madde 38 (MINIMUM
+//      INDEPENDENT EVIDENCE), which is DELIBERATELY NOT implemented as a
+//      gate — Madde 38 itself, plus its v3.1 EK, explicitly warns that
+//      picking a minimum-evidence-count threshold without proper
+//      multi-regime out-of-sample validation (Madde 95-97, EK-F) IS the
+//      data-mining bias the spec elsewhere warns against; this script has
+//      no backtest/validation infrastructure yet (Phase H/I), so
+//      implementing a guessed number now would violate Madde 38's own
+//      meta-rule. Deferred until that infrastructure exists, not silently
+//      dropped (Madde 139/140).
+//
+//      Also: per user report, the FULL diagnostics table (single block, 45
+//      rows) overflowed the visible pane on a tablet. First attempt
+//      (v0.15.0) split it into two table objects (top_right + bottom_right)
+//      — the user then reported those two STILL visually overlapped on
+//      their device. Superseded (v0.15.1) by a genuine pagination system —
+//      see module 15's own note below and the DIAGNOSTICS section's
+//      f_addDiagRow — which is now the PERMANENT mechanism until Madde 114:
+//      one growing row list, one small table, an input picks which page.
+//
+//  16. POSITION LIFECYCLE / EXIT ENGINE (Madde 56-58) — Phase G, part 1.
+//      Before this, CONFIRMED_LONG/CONFIRMED_SHORT was the last reachable
+//      state and was re-evaluated fresh every bar; it now immediately
+//      snapshots entry/stop/target (the SAME levels Risk Engine already
+//      computed at confirmation, Madde 111) and moves to IN_POSITION,
+//      which the Setup Classifier's own logic no longer touches (a new
+//      guard excludes IN_POSITION/EXIT/COOLDOWN) until the position
+//      closes. Only Madde 57's two most fundamental exits are implemented
+//      — INITIAL STOP and TARGET; structure invalidation, break-even,
+//      trailing, time stop, partial exit, and emergency exit are all
+//      explicitly deferred (see below), not silently skipped. Madde 57's
+//      same-bar ambiguity rule is applied literally: if a bar's range
+//      touches both stop and target, OHLC data alone can't say which came
+//      first, so the conservative outcome (stop) is always checked FIRST
+//      and wins — never the optimistic (target) outcome. EXIT persists
+//      for exactly one bar (visible in the panel and on the chart) before
+//      advancing to COOLDOWN, a simple fixed i_cooldownBars count-down
+//      (Madde 56's MINIMUM requirement only — don't re-enter immediately
+//      after closing — explicitly NOT EK-D's validated, cross-setup-aware
+//      cooldown, which needs real trade-outcome statistics this indicator
+//      doesn't track) before returning to FLAT. Caught and fixed, before
+//      delivery, a real bug this change would otherwise have introduced:
+//      the existing "CONFIRMED LONG/SHORT" chart label read currentState
+//      to decide direction/color, but currentState now advances to
+//      IN_POSITION within the SAME bar (before that visual code runs) —
+//      so the check would always read false, silently mislabeling every
+//      LONG as SHORT. Fixed by reading posDirection instead, which is set
+//      in the same transition and persists until the position closes.
+//
+//  17. ALERT ENGINE (Madde 116-117) — Phase G, part 2. State-transition/
+//      event based per Madde 116: WATCH ENTER, SETUP ENTER, CONFIRMED
+//      LONG, CONFIRMED SHORT, HARD VETO, EXIT, COOLDOWN — each fires
+//      exactly once on entering that state/condition, never repeating on
+//      consecutive bars while it persists (edge-triggered via a
+//      lastAlertedState/lastAlertedHardVeto comparison; CONFIRMED LONG/
+//      SHORT specifically use the existing `newlyConfirmed` flag instead,
+//      since currentState advances to IN_POSITION within the same bar —
+//      same reasoning as the chart label's posDirection fix in module 16).
+//      Message content follows Madde 117's example format populated from
+//      REAL, already-computed evidence only (regime, structure, location,
+//      setup, momentum, participation, MTF, volatility, entry/stop/
+//      target/R:R) — reused, not recomputed (Madde 111).
+//
+//      TWO explicit corrections made per user instruction before building
+//      this, both verified rather than assumed (Madde 127):
+//      (a) ALERT TIMING: TradingView's own official documentation
+//      ("Delays in OncePerBarClose alerts") confirms alert()/
+//      alertcondition() do NOT fire at the exact instant of confirmed bar
+//      close — the server waits for the first trade of the FOLLOWING bar
+//      to confirm no late trades belong to the closing bar (typically a
+//      few seconds), with a ~1-minute worst-case fallback during illiquid
+//      periods. This matches EK-H's own text exactly ("bir sonraki
+//      tick'te tetiklenir"). The SCRIPT's decision of WHICH state to
+//      alert is still fully non-repainting (computed from
+//      barstate.isconfirmed data); only the real-world notification
+//      DELIVERY lags — a real, documented gap (Madde 136), not silently
+//      ignored.
+//      (b) SCORE/CONFIDENCE: Madde 117's example message includes these,
+//      but neither a scoring/aggregation engine (Madde 41) nor a
+//      composite Signal Confidence (Madde 39) has been built. NOT
+//      fabricated — shown as "N/A (not implemented)" in the alert
+//      message so the gap is visible and explained, not silently dropped.
+//
+// EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
+//   - Full REACTION QUALITY per touch (needs Price Action + Participation
+//     evidence — both now exist, but no scoring engine combines them yet,
+//     Madde 41) and HTF_IMPORTANCE (needs the full MTF cascade, not just the
+//     single-HTF module built this turn) are NOT computed — Zone exposes
+//     freshness/touch-count/EMA-confluence only, not a fabricated single
+//     "quality score". Same restraint applies to the Breakout FSM's
+//     displacement/retest checks (Structure-family only).
+//   - Regime Confidence's "structure agreement" factor (Madde 11) still NOT
+//     wired up, same as before — deferred to its own reviewable step.
+//   - Full Evidence Family aggregation / family caps (Madde 42) — deferred
+//     until scoring/normalization (Madde 41) exists.
+//   - Relative Strength — explicitly SKIPPED by user decision (see Phase E
+//     note above), not merely postponed. Full multi-level MTF cascade (only
+//     ONE HTF level is requested so far, not the full 1D/4H/1H/15m stack)
+//     remains deferred.
+//   - Compact panel (Madde 114). Trigger engine (distinct from the Setup
+//     Classifier's own trigger concept — Madde 64's broader trigger
+//     taxonomy). Final Decision Engine (Madde 37) — the Veto Engine now
+//     gates CONFIRMED_LONG/CONFIRMED_SHORT directly, but a dedicated
+//     scoring/aggregation Decision Engine layer on top of it does not
+//     exist yet — this is also why the Alert Engine's SCORE/CONFIDENCE
+//     fields show "N/A (not implemented)" rather than a fabricated number
+//     (module 17). Five of Madde 57's exit mechanisms — structure
+//     invalidation, break-even, trailing stop, time stop (Madde 58),
+//     partial exit, emergency exit — only INITIAL STOP/TARGET are built
+//     (module 16). Position sizing beyond the Risk Engine's own
+//     diagnostic numbers (Madde 48's spot/perpetual/MAX EXPOSURE nuances,
+//     Madde 88 backtest-time sizing) is out of scope until real
+//     backtesting exists to test it against. EK-C (Account-Level Circuit
+//     Breaker) and EK-D's validated/cross-setup-aware cooldown both need
+//     actual trade-outcome statistics (win/loss sequences) this indicator
+//     does not accumulate anywhere yet — i_cooldownBars only satisfies
+//     Madde 56's bare minimum (don't re-enter immediately), not EK-D's
+//     researched version. Some Madde 52 hard-veto/soft-penalty candidates
+//     are NOT checked because no data source exists for them yet:
+//     EXECUTION INVALID, LEVERAGE CASCADE RISK (EK-A — spec itself says
+//     don't fabricate this without reliable funding/OI/liquidation data),
+//     position/exposure violation, unsupported timeframe (Madde 32),
+//     "late entry" (no defined threshold), repaint-sensitive final signal
+//     (N/A — nothing here repaints), critical calculation unavailable
+//     (already covered by Risk Engine's own NO STRUCTURAL STOP/NO TARGET
+//     ZONE statuses, not duplicated). Madde 38 (Minimum Independent
+//     Evidence, see module 15) is deliberately NOT a gate yet — no
+//     validated threshold exists, and the spec itself forbids guessing
+//     one. Phase C, D, E, AND F are complete; Phase G is now substantially
+//     complete (Position Lifecycle, initial stop+target Exit Engine, AND
+//     the Alert Engine are all done — the engine can now track an open
+//     position end-to-end, FLAT through COOLDOWN back to FLAT, and notify
+//     on every state transition) per the Madde 121 roadmap; the remaining
+//     Madde 57 exit mechanisms are what's left in Phase G.
+//
+// Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
+// live every tick (clearly marked), but `currentState`, `primaryRegime`,
+// `barsInRegime`, Structure state, Zone state, and the Breakout FSM only ever
+// advance on barstate.isconfirmed. ta.* functions (pivots, crossover/
+// crossunder) are called unconditionally every bar; only the resulting STATE
+// UPDATE is gated. Fibonacci levels are pure derivations of already-confirmed
+// swing prices, so they carry the same non-repaint guarantee without needing
+// their own gate.
+//
+// v0.4.1 QA FIX (🤍, Madde 125): RE10045 on bar 0 of a fresh chart —
+// `array.get()` index out of bounds inside f_updateZones(). Root cause: Pine's
+// `for i = a to b` does NOT skip when b < a — it still runs at least once
+// (counting down), so on an empty array `to array.size(zones) - 1` (= -1)
+// executed one iteration at index 0 against a zero-length array. Fixed by
+// guarding every such loop (f_upsertZone, f_updateZones, f_nearestZone, and
+// the three zone/box-drawing loops) with an explicit `array.size(...) > 0`
+// check before entering the `for`.
+//
+// v0.9.1 QA FIX (🤍, Madde 125): CE10173 compile error — "Cannot assign a
+// value of the 'simple na' type to the 'lastPriceAboveVwap' variable. The
+// variable is declared with the 'const bool' type." Root cause: a Pine v6
+// bool-specific quirk — `var bool x = na` infers x as `const bool` (unlike
+// `var float x = na` / `var int x = na`, which infer permissively), so the
+// later `lastPriceAboveVwap := priceAboveVwap` (a runtime series bool) gets
+// rejected as a series-into-const assignment. Fixed by casting the
+// initializer explicitly: `var bool lastPriceAboveVwap = bool(na)`.
+//
+// v0.9.2 QA FIX (🤍, Madde 125): runtime error in Bar Replay only — "Error on
+// bar 10084: The requested historical offset (330) is beyond the historical
+// buffer's limit (329)." Root cause: Pine auto-detects how many bars of
+// history to keep per series, but Bar Replay enforces this more strictly
+// than normal chart execution, and a script this size (many ta.* calls with
+// their own lookbacks — EMA200, ta.percentrank(,100), MACD(12,26,9), RSI,
+// pivots, RVOL/VWAP SMAs — plus explicit `[]` offsets like
+// open/close/rsiValue[i_pivotRight]) can need more auto-detected buffer than
+// Pine allocates by default, especially under Replay's tighter limit. Fixed
+// per Pine's own documented remedy for this exact error: explicitly reserve
+// the buffer via `max_bars_back = 500` on the indicator() call, well above
+// every lookback actually used in this script.
+//
+// v0.11.1 QA FIX (🤍, Madde 125): user caught (via screenshots) that RISK
+// SHORT showed R:R 21-34 and status "OK" while price had ALREADY traded
+// above the computed short stop. Root cause: when no un-broken opposing
+// zone exists yet, the Risk Engine's stop reference falls back to
+// lastSwingHighPrice/lastSwingLowPrice (Madde 14's central swing function) —
+// but a swing is only "known" pivotRight bars after it actually happened,
+// so during a strong breakout (confirmed BOS UP in this case) price can
+// close well past that stale swing level before a NEW swing gets confirmed.
+// f_riskCalc was applying the ATR buffer and computing R:R against that
+// already-breached reference as if it were still valid, producing a
+// mechanically inflated R:R (tiny stop distance vs. a distant target) on a
+// premise that was already false. Fixed by checking, in f_riskCalc, whether
+// `entry` has already crossed the RAW (un-buffered) stopRaw before doing
+// anything else — if so, the status is now the explicit "ALREADY
+// INVALIDATED" (R:R reported as N/A, not a fabricated number) instead of a
+// false "OK". Highlighted in orange in the diagnostics table.
+//
+// v0.12.1 QA FIX (🤍, Madde 125): user caught STATE showing ENTRY_PENDING
+// while the SETUP row showed NONE at the same time. Root cause: setupType
+// reused f_isIdleBreakoutState (built for the Breakout FSM's own "can a NEW
+// candidate start here" question) to decide "is there a setup to report" —
+// the two questions disagree exactly at BreakoutFSMState.ENTRY (idle for a
+// fresh candidate, but still the live result the state machine correctly
+// keeps at ENTRY_PENDING). Fixed with a DEDICATED f_isActiveSetupState
+// function for the Setup Classifier's own question (BREAKOUT_CANDIDATE/
+// CONFIRMED_BREAKOUT/RETEST_PENDING/ENTRY = active); f_isIdleBreakoutState
+// itself was left untouched since it is correct for its own purpose.
+// =============================================================================
+
+// Title/shorttitle kept short and FIXED on purpose (TradingView hard limits:
+// title <=128 chars, shorttitle much shorter) — a v0.5 title that spelled out
+// every module by name already broke the 128-char limit once modules kept
+// being added. Full module list lives in the header comment above and in
+// ENGINE_VERSION instead, where there is no length limit.
+indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
+
+var string ENGINE_VERSION = "v0.17.0-phaseG-alert-engine"
+
+// -----------------------------------------------------------------------------
+// STATE MACHINE SKELETON (Madde 55)
+// -----------------------------------------------------------------------------
+enum EngineState
+    DATA_INVALID
+    FLAT
+    WATCH
+    SETUP
+    ENTRY_PENDING
+    CONFIRMED_LONG
+    CONFIRMED_SHORT
+    IN_POSITION
+    EXIT
+    COOLDOWN
+
+f_stateLabel(EngineState s) =>
+    switch s
+        EngineState.DATA_INVALID   => "DATA_INVALID"
+        EngineState.FLAT           => "FLAT"
+        EngineState.WATCH          => "WATCH"
+        EngineState.SETUP          => "SETUP"
+        EngineState.ENTRY_PENDING  => "ENTRY_PENDING"
+        EngineState.CONFIRMED_LONG => "CONFIRMED_LONG"
+        EngineState.CONFIRMED_SHORT => "CONFIRMED_SHORT"
+        EngineState.IN_POSITION    => "IN_POSITION"
+        EngineState.EXIT           => "EXIT"
+        EngineState.COOLDOWN       => "COOLDOWN"
+        =>                             "UNKNOWN"
+
+// STATE row coloring (diagnostics table): DATA_INVALID=red,
+// CONFIRMED_LONG=lime, CONFIRMED_SHORT=red, FLAT=gray, everything else
+// (WATCH/SETUP/ENTRY_PENDING — "something is in progress") = yellow.
+f_stateColor(EngineState s) =>
+    s == EngineState.DATA_INVALID    ? color.red :
+     s == EngineState.CONFIRMED_LONG  ? color.lime :
+     s == EngineState.CONFIRMED_SHORT ? color.red :
+     s == EngineState.FLAT            ? color.gray :
+     color.yellow
+
+var EngineState currentState = EngineState.DATA_INVALID
+
+// -----------------------------------------------------------------------------
+// EVIDENCE FAMILY TAXONOMY (Madde 5) — documentation-only at this stage.
+// No scoring/aggregation engine exists yet; this enum exists so each module's
+// output can be explicitly tagged with the family it belongs to as it is
+// built, instead of retrofitting the taxonomy later.
+// Producers so far: CONTEXT_REGIME + VOLATILITY (Market Regime), STRUCTURE
+// (also standing in for "Dow" per Madde 61 — the Breakout FSM uses this same
+// family too, since it only reasons about price vs. a structural level),
+// LOCATION (Zone module AND Fibonacci module both — Madde 4 names the
+// combined hierarchy stage "LOCATION / ZONE"; Madde 17 explicitly calls
+// Fibonacci "location evidence", so it shares the SAME family as Zone rather
+// than getting its own), TRIGGER (Price Action module — Madde 64 lists
+// "rejection"/"reclaim"/"close confirmation" as trigger examples, which is
+// exactly what Price Action's patterns are), MOMENTUM (RSI + MACD histogram
+// only, not also Stochastic/CCI, to avoid double-counting within this same
+// family, Madde 6), PARTICIPATION (this module — RVOL + OBV alignment only,
+// same double-counting reasoning applied to volume-flavored indicators).
+// -----------------------------------------------------------------------------
+enum EvidenceFamily
+    CONTEXT_REGIME
+    DIRECTION
+    STRUCTURE
+    LOCATION
+    TRIGGER
+    PARTICIPATION
+    MOMENTUM
+    VOLATILITY
+    MTF
+    RISK
+    EXECUTION
+
+// -----------------------------------------------------------------------------
+// MARKET REGIME ENUMS (Madde 9)
+// -----------------------------------------------------------------------------
+enum RegimeType
+    BULL_TREND
+    BEAR_TREND
+    RANGE
+    TRANSITION
+
+enum VolRegime
+    LOW_VOL
+    NORMAL_VOL
+    HIGH_VOL
+    EXTREME_VOL
+
+enum ConfidenceLevel
+    LOW
+    MEDIUM
+    HIGH
+
+f_regimeLabel(RegimeType r) =>
+    switch r
+        RegimeType.BULL_TREND => "BULL_TREND"
+        RegimeType.BEAR_TREND => "BEAR_TREND"
+        RegimeType.RANGE      => "RANGE"
+        RegimeType.TRANSITION => "TRANSITION"
+        =>                        "UNKNOWN"
+
+f_volLabel(VolRegime v) =>
+    switch v
+        VolRegime.LOW_VOL     => "LOW_VOL"
+        VolRegime.NORMAL_VOL  => "NORMAL_VOL"
+        VolRegime.HIGH_VOL    => "HIGH_VOL"
+        VolRegime.EXTREME_VOL => "EXTREME_VOL"
+        =>                        "UNKNOWN"
+
+f_confLabel(ConfidenceLevel c) =>
+    switch c
+        ConfidenceLevel.LOW    => "LOW"
+        ConfidenceLevel.MEDIUM => "MEDIUM"
+        ConfidenceLevel.HIGH   => "HIGH"
+        =>                         "UNKNOWN"
+
+// -----------------------------------------------------------------------------
+// MARKET STRUCTURE ENUMS (Madde 14, 61)
+// -----------------------------------------------------------------------------
+enum SwingLabel
+    NONE
+    HH
+    LH
+    HL
+    LL
+
+enum StructureBias
+    NEUTRAL
+    BULLISH
+    BEARISH
+
+enum StructureEvent
+    NONE
+    BOS_UP
+    BOS_DOWN
+    CHOCH_UP
+    CHOCH_DOWN
+
+f_swingLabel(SwingLabel s) =>
+    switch s
+        SwingLabel.HH => "HH"
+        SwingLabel.LH => "LH"
+        SwingLabel.HL => "HL"
+        SwingLabel.LL => "LL"
+        =>                "N/A"
+
+f_biasLabel(StructureBias b) =>
+    switch b
+        StructureBias.BULLISH => "BULLISH"
+        StructureBias.BEARISH => "BEARISH"
+        =>                        "NEUTRAL"
+
+f_structEventLabel(StructureEvent e) =>
+    switch e
+        StructureEvent.BOS_UP    => "BOS UP"
+        StructureEvent.BOS_DOWN  => "BOS DOWN"
+        StructureEvent.CHOCH_UP  => "CHoCH UP"
+        StructureEvent.CHOCH_DOWN => "CHoCH DOWN"
+        =>                            "NONE"
+
+// -----------------------------------------------------------------------------
+// BREAKOUT / RETEST STATE MACHINE ENUMS (Madde 20-21)
+// -----------------------------------------------------------------------------
+enum BreakoutDirection
+    NONE
+    UP
+    DOWN
+
+enum BreakoutFSMState
+    PRE_BREAKOUT
+    BREAKOUT_CANDIDATE
+    CONFIRMED_BREAKOUT
+    RETEST_PENDING
+    ENTRY
+    FAILED_BREAKOUT
+    REVERSAL_CANDIDATE
+    STALE
+
+f_breakoutDirLabel(BreakoutDirection d) =>
+    switch d
+        BreakoutDirection.UP   => "UP"
+        BreakoutDirection.DOWN => "DOWN"
+        =>                         "NONE"
+
+f_breakoutStateLabel(BreakoutFSMState s) =>
+    switch s
+        BreakoutFSMState.PRE_BREAKOUT       => "PRE_BREAKOUT"
+        BreakoutFSMState.BREAKOUT_CANDIDATE => "BREAKOUT_CANDIDATE"
+        BreakoutFSMState.CONFIRMED_BREAKOUT => "CONFIRMED_BREAKOUT"
+        BreakoutFSMState.RETEST_PENDING     => "RETEST_PENDING"
+        BreakoutFSMState.ENTRY              => "ENTRY (structural only)"
+        BreakoutFSMState.FAILED_BREAKOUT    => "FAILED_BREAKOUT"
+        BreakoutFSMState.REVERSAL_CANDIDATE => "REVERSAL_CANDIDATE"
+        BreakoutFSMState.STALE              => "STALE"
+        =>                                      "UNKNOWN"
+
+// Idle = a fresh BREAKOUT_CANDIDATE may start from here (Madde 20). Pure
+// function, no outer-scope references, safe to define this early.
+f_isIdleBreakoutState(BreakoutFSMState s) =>
+    s == BreakoutFSMState.PRE_BREAKOUT or s == BreakoutFSMState.STALE or
+     s == BreakoutFSMState.FAILED_BREAKOUT or s == BreakoutFSMState.REVERSAL_CANDIDATE or
+     s == BreakoutFSMState.ENTRY
+
+// -----------------------------------------------------------------------------
+// SETUP CLASSIFIER ENUMS (Madde 18) — all FIVE archetypes Madde 18 names are
+// declared here (documenting the full taxonomy, same pattern as
+// EvidenceFamily/RegimeType existing before every producer was built), but
+// only BREAKOUT_RETEST has detection logic wired up this turn — see the
+// SETUP CLASSIFIER computation section for why (it reuses the Breakout FSM
+// almost entirely). The other four are declared, unused, and will simply
+// never be output — not a fake placeholder (Madde 139/140).
+// -----------------------------------------------------------------------------
+enum SetupType
+    NONE
+    BREAKOUT_RETEST
+    PULLBACK_CONTINUATION
+    RANGE_REJECTION
+    FAILED_BREAKOUT_REVERSAL
+    MEAN_REVERSION
+
+f_setupTypeLabel(SetupType t) =>
+    switch t
+        SetupType.BREAKOUT_RETEST          => "BREAKOUT RETEST"
+        SetupType.PULLBACK_CONTINUATION    => "PULLBACK CONTINUATION"
+        SetupType.RANGE_REJECTION          => "RANGE REJECTION"
+        SetupType.FAILED_BREAKOUT_REVERSAL => "FAILED BREAKOUT REVERSAL"
+        SetupType.MEAN_REVERSION           => "MEAN REVERSION"
+        =>                                     "NONE"
+
+// Generic stage every archetype's own state maps onto, so ONE state-machine
+// block (further below) can drive WATCH/SETUP/ENTRY_PENDING regardless of
+// WHICH archetype is currently active (Madde 111 — one mapping, not five).
+// READY covers BOTH "ENTRY_PENDING, still waiting" and "ENTRY_PENDING, fully
+// confirmed this bar" — the companion `setupPromotable` bool (computed
+// alongside, in the priority-resolution block) distinguishes the two only
+// where it matters: whether the Veto Engine's CONFIRMED promotion applies
+// THIS bar.
+enum SetupStage
+    IDLE
+    FORMING
+    CONFIRMED
+    READY
+
+// Madde 19 — SETUP ELIGIBILITY GATE / REGIME COMPATIBILITY: a breakout-retest
+// continuation is only eligible when its direction does not fight the
+// current regime. Pure function (no outer-scope references), so it stays
+// safe to define this early next to the other Breakout FSM helpers.
+// regimeConfidence is deliberately NOT part of this check — that is a
+// separate, already-documented gate (Madde 11/37) reserved for the future
+// Decision Engine, not to be conflated with regime-TYPE compatibility
+// (Madde 111: don't double up two different gates into one).
+f_breakoutRetestEligible(BreakoutDirection dir, RegimeType regime) =>
+    dir == BreakoutDirection.UP   ? (regime == RegimeType.BULL_TREND or regime == RegimeType.TRANSITION) :
+     dir == BreakoutDirection.DOWN ? (regime == RegimeType.BEAR_TREND or regime == RegimeType.TRANSITION) :
+     false
+
+// v0.12.1 QA FIX (🤍, Madde 125): "is there a setup to REPORT right now" is
+// NOT the same question as f_isIdleBreakoutState's "can a NEW candidate
+// START from here" — they disagree exactly at BreakoutFSMState.ENTRY (idle
+// for starting a fresh candidate, but still the live result of the setup
+// that just completed, which the state machine correctly keeps at
+// ENTRY_PENDING). Reusing f_isIdleBreakoutState for setupType caused the
+// STATE row to show ENTRY_PENDING while the SETUP row showed NONE — a real
+// inconsistency the user caught. A DEDICATED function for the Setup
+// Classifier's own question, leaving f_isIdleBreakoutState untouched (it is
+// correct for the Breakout FSM's own purpose).
+f_isActiveSetupState(BreakoutFSMState s) =>
+    s == BreakoutFSMState.BREAKOUT_CANDIDATE or s == BreakoutFSMState.CONFIRMED_BREAKOUT or
+     s == BreakoutFSMState.RETEST_PENDING or s == BreakoutFSMState.ENTRY
+
+// -----------------------------------------------------------------------------
+// REMAINING SETUP ARCHETYPES (Madde 18) — PULLBACK_CONTINUATION,
+// RANGE_REJECTION, FAILED_BREAKOUT_REVERSAL, MEAN_REVERSION. Per user
+// decision, built together against the now-existing Veto Engine (rather
+// than one at a time capped at ENTRY_PENDING with no consumer, the same
+// trap Risk Engine sat in before the Setup Classifier existed).
+//
+// FAILED_BREAKOUT_REVERSAL needs NO new state machine at all — it is a
+// direct reinterpretation of the Breakout FSM's OWN REVERSAL_CANDIDATE
+// state (Madde 111: maximum reuse). By the time REVERSAL_CANDIDATE is
+// reached, the retest was already price-rejected — touch AND trigger are
+// both already contained in that one state, so this archetype resolves
+// directly to "fully confirmed", no separate FORMING/CONFIRMED phase.
+//
+// PULLBACK_CONTINUATION, RANGE_REJECTION, and MEAN_REVERSION share ONE
+// generic, lightweight "reaction" state machine (ReactionFSMState below) —
+// touch a reference level/condition, wait for a reversal-style trigger
+// within a timeout, or fail if the level breaks first. This is genuinely
+// the SAME shape for all three (Madde 111 — one mechanism, not three
+// near-duplicates); what differs per archetype is ONLY which regime gates
+// it, which zone/condition counts as "touch", and which direction(s) are
+// considered. A SINGLE instance (not one per direction) is tracked per
+// archetype — eligibility already restricts each to at most one live
+// direction at a time (a range can't be touching its own support AND
+// resistance on the same bar; RSI can't be oversold AND overbought at
+// once), so a long/short-symmetric pair of instances (like Risk Engine's)
+// would just double the state for no benefit here.
+// -----------------------------------------------------------------------------
+enum ReactionFSMState
+    IDLE
+    PENDING
+    CONFIRMED
+    FAILED
+    STALE
+
+f_reactionLabel(ReactionFSMState s) =>
+    switch s
+        ReactionFSMState.PENDING   => "PENDING"
+        ReactionFSMState.CONFIRMED => "CONFIRMED"
+        ReactionFSMState.FAILED    => "FAILED"
+        ReactionFSMState.STALE     => "STALE"
+        =>                             "IDLE"
+
+// Idle-for-restart = a fresh PENDING may start from here — same "can a NEW
+// candidate start" concept as f_isIdleBreakoutState, kept as its own
+// function since ReactionFSMState is a different enum (Pine has no generic
+// functions across enum types).
+f_isIdleReactionState(ReactionFSMState s) =>
+    s == ReactionFSMState.IDLE or s == ReactionFSMState.CONFIRMED or
+     s == ReactionFSMState.FAILED or s == ReactionFSMState.STALE
+
+// Pure transition function — the caller (one block per archetype, below)
+// owns the `var` state and the bars-in-PENDING timeout counter, exactly
+// like every other stateful module in this script (Madde 33-34 pattern).
+f_reactionFSMStep(ReactionFSMState state, bool touch, bool triggerFired, bool invalidated, bool timedOut) =>
+    state == ReactionFSMState.PENDING ?
+         (invalidated ? ReactionFSMState.FAILED : triggerFired ? ReactionFSMState.CONFIRMED : timedOut ? ReactionFSMState.STALE : ReactionFSMState.PENDING) :
+     state == ReactionFSMState.CONFIRMED ?
+         (invalidated ? ReactionFSMState.FAILED : ReactionFSMState.CONFIRMED) :
+     touch ? ReactionFSMState.PENDING :
+     ReactionFSMState.IDLE
+
+// Madde 19 eligibility for FAILED_BREAKOUT_REVERSAL: the REVERSAL direction
+// (opposite of the failed breakout) must not fight the prevailing regime —
+// e.g. a failed UP breakout reversing DOWN while regime is still BULL_TREND
+// is exactly Madde 19's own "STRONG BULL TREND + MEAN REVERSION SHORT ->
+// not automatically valid" warning pattern.
+f_failedReversalEligible(BreakoutDirection failedDir, RegimeType regime) =>
+    failedDir == BreakoutDirection.UP   ? regime != RegimeType.BULL_TREND :
+     failedDir == BreakoutDirection.DOWN ? regime != RegimeType.BEAR_TREND :
+     false
+
+// -----------------------------------------------------------------------------
+// MOMENTUM ENUMS (Madde 23) — a STATE label, never "RSI 30 = LONG" style
+// automatic direction-from-level logic.
+// -----------------------------------------------------------------------------
+enum MomentumState
+    NEUTRAL
+    ACCELERATING
+    DECELERATING
+    RECOVERING
+    WEAKENING
+
+enum MomentumDirection
+    NONE
+    BULLISH
+    BEARISH
+
+enum DivergenceType
+    NONE
+    BULLISH
+    BEARISH
+
+f_momStateLabel(MomentumState s) =>
+    switch s
+        MomentumState.ACCELERATING => "ACCELERATING"
+        MomentumState.DECELERATING => "DECELERATING"
+        MomentumState.RECOVERING   => "RECOVERING"
+        MomentumState.WEAKENING    => "WEAKENING"
+        =>                             "NEUTRAL"
+
+f_momDirLabel(MomentumDirection d) =>
+    switch d
+        MomentumDirection.BULLISH => "BULLISH"
+        MomentumDirection.BEARISH => "BEARISH"
+        =>                            "NONE"
+
+f_divergenceLabel(DivergenceType d) =>
+    switch d
+        DivergenceType.BULLISH => "BULLISH DIVERGENCE"
+        DivergenceType.BEARISH => "BEARISH DIVERGENCE"
+        =>                          "NONE"
+
+// -----------------------------------------------------------------------------
+// PARTICIPATION ENUMS (Madde 24)
+// -----------------------------------------------------------------------------
+enum ParticipationState
+    NORMAL
+    EXPANDING
+    CONTRACTING
+    CONFIRMING
+    DIVERGING
+
+enum ParticipationDirection
+    NONE
+    BULLISH
+    BEARISH
+
+f_partStateLabel(ParticipationState s) =>
+    switch s
+        ParticipationState.EXPANDING   => "EXPANDING"
+        ParticipationState.CONTRACTING => "CONTRACTING"
+        ParticipationState.CONFIRMING  => "CONFIRMING"
+        ParticipationState.DIVERGING   => "DIVERGING"
+        =>                                 "NORMAL"
+
+f_partDirLabel(ParticipationDirection d) =>
+    switch d
+        ParticipationDirection.BULLISH => "BULLISH"
+        ParticipationDirection.BEARISH => "BEARISH"
+        =>                                 "NONE"
+
+// -----------------------------------------------------------------------------
+// MTF ENUMS (Madde 28-32) — HTF bias reuses StructureBias (same three values,
+// same meaning: BULLISH/BEARISH/NEUTRAL direction read), not a duplicate
+// near-identical enum (Madde 111). MtfAgreement is the NEW concept: how the
+// HTF bias relates to the chart's own structureBias.
+// -----------------------------------------------------------------------------
+enum MtfAgreement
+    UNAVAILABLE
+    AGREE
+    CONFLICT
+    NEUTRAL
+
+f_mtfAgreementLabel(MtfAgreement a) =>
+    switch a
+        MtfAgreement.AGREE    => "AGREE"
+        MtfAgreement.CONFLICT => "CONFLICT"
+        MtfAgreement.NEUTRAL  => "NEUTRAL"
+        =>                         "UNAVAILABLE"
+
+// -----------------------------------------------------------------------------
+// SUPPORT/RESISTANCE ZONE TYPE + HELPERS (Madde 15, 16) — built ONLY on top of
+// the central confirmed-swing function; no separate pivot logic here. All
+// helpers take their thresholds as explicit parameters (never read inputs or
+// later-declared globals directly) so they stay safe to define this early.
+// -----------------------------------------------------------------------------
+type Zone
+    float zoneHigh
+    float zoneLow
+    int   createdBar    // SWING_TIME of the swing that created/last extended it
+    int   knownBar      // KNOWN_TIME the zone (or its last merge) became known
+    int   lastTouchBar
+    int   touchCount
+    bool  broken
+    int   brokenBar
+
+f_upsertZone(array<Zone> zones, float zHigh, float zLow, int swingBar, int knownBar, float atrVal, float clusterMult, int maxZones) =>
+    float newCenter = (zHigh + zLow) / 2
+    int mergedIndex = -1
+    // Pine's `for a to b` runs at least once even when b < a (it counts DOWN
+    // in that case) — an empty array (size 0) makes `to array.size(zones)-1`
+    // evaluate to -1, which without this guard still executes one iteration
+    // at index 0 and crashes array.get() on bar 0. Always guard size > 0.
+    if atrVal > 0 and array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                float zCenter = (z.zoneHigh + z.zoneLow) / 2
+                if math.abs(newCenter - zCenter) <= atrVal * clusterMult
+                    mergedIndex := i
+                    break
+    if mergedIndex >= 0
+        Zone existing = array.get(zones, mergedIndex)
+        existing.zoneHigh := math.max(existing.zoneHigh, zHigh)
+        existing.zoneLow  := math.min(existing.zoneLow, zLow)
+        existing.touchCount := existing.touchCount + 1
+        existing.lastTouchBar := knownBar
+    else
+        Zone newZone = Zone.new(zoneHigh = zHigh, zoneLow = zLow, createdBar = swingBar, knownBar = knownBar, lastTouchBar = knownBar, touchCount = 1, broken = false, brokenBar = na)
+        array.push(zones, newZone)
+        if array.size(zones) > maxZones
+            array.remove(zones, 0)
+    true
+
+f_updateZones(array<Zone> zones, bool isResistance, float barHigh, float barLow, float barClose, int curBar) =>
+    // Same empty-array guard as f_upsertZone — see comment there.
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                bool touched = barHigh >= z.zoneLow and barLow <= z.zoneHigh
+                if touched and z.lastTouchBar != curBar
+                    z.touchCount := z.touchCount + 1
+                    z.lastTouchBar := curBar
+                if isResistance and barClose > z.zoneHigh
+                    z.broken := true
+                    z.brokenBar := curBar
+                if not isResistance and barClose < z.zoneLow
+                    z.broken := true
+                    z.brokenBar := curBar
+    true
+
+f_nearestZone(array<Zone> zones, float refPrice) =>
+    float bestDist = na
+    int bestIdx = -1
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                float center = (z.zoneHigh + z.zoneLow) / 2
+                float dist = math.abs(refPrice - center)
+                if na(bestDist) or dist < bestDist
+                    bestDist := dist
+                    bestIdx := i
+    bestIdx
+
+f_zoneFreshness(Zone z, int curBar, int freshAgeBars, int staleAgeBars, int exhaustTouches) =>
+    age = curBar - z.createdBar
+    z.touchCount >= exhaustTouches ? "EXHAUSTED" : age > staleAgeBars ? "STALE" : age <= freshAgeBars ? "FRESH" : "AGING"
+
+f_emaConfluence(Zone z, float ef, float em, float es, float atrVal, float mult) =>
+    float lo = z.zoneLow - atrVal * mult
+    float hi = z.zoneHigh + atrVal * mult
+    (ef >= lo and ef <= hi) or (em >= lo and em <= hi) or (es >= lo and es <= hi)
+
+f_zoneSummary(array<Zone> zones, int idx, float ef, float em, float es, float atrVal, float confMult, int curBar, int freshAge, int staleAge, int exhaustN) =>
+    string result = "NONE"
+    if idx >= 0
+        Zone z = array.get(zones, idx)
+        string fresh = f_zoneFreshness(z, curBar, freshAge, staleAge, exhaustN)
+        bool conf = f_emaConfluence(z, ef, em, es, atrVal, confMult)
+        result := fresh + "  " + str.tostring(z.zoneLow) + "-" + str.tostring(z.zoneHigh) + " (" + str.tostring(z.touchCount) + "x)" + (conf ? " EMA" : "")
+    result
+
+// Zone-interaction helpers for the Setup Classifier's reaction-type
+// archetypes (Pullback Continuation, Range Rejection — see that section,
+// further below). Declared here (not near the other Setup Classifier
+// helpers earlier in the file) because they need the Zone type, which
+// isn't declared until just above this point. Same RE10045/eager-ternary
+// lesson as the Risk Engine's longStopRaw/shortStopRaw (see there) —
+// array.get() is only reached through an `if idx >= 0` guard, never
+// through a ternary that would evaluate it on -1.
+f_zoneTouch(array<Zone> zones, int idx, float barHigh, float barLow) =>
+    bool touched = false
+    if idx >= 0
+        Zone z = array.get(zones, idx)
+        touched := barHigh >= z.zoneLow and barLow <= z.zoneHigh
+    touched
+
+f_zoneBrokenBelow(array<Zone> zones, int idx, float c) =>
+    bool broken = false
+    if idx >= 0
+        broken := c < array.get(zones, idx).zoneLow
+    broken
+
+f_zoneBrokenAbove(array<Zone> zones, int idx, float c) =>
+    bool broken = false
+    if idx >= 0
+        broken := c > array.get(zones, idx).zoneHigh
+    broken
+
+// -----------------------------------------------------------------------------
+// FIBONACCI HELPERS (Madde 17) — computed only from the two most recently
+// confirmed structural swings (the central swing function above), never a
+// random last-N-bars high/low. Pure functions, no outer-scope references.
+// -----------------------------------------------------------------------------
+f_fibLevel(bool legUp, float hi, float lo, float ratio) =>
+    legUp ? hi - (hi - lo) * ratio : lo + (hi - lo) * ratio
+
+f_fibTouchLabel(float price, float f236, float f382, float f500, float f618, float f786, float tol) =>
+    string result = "NONE"
+    if not na(f236) and math.abs(price - f236) <= tol
+        result := "0.236"
+    if not na(f382) and math.abs(price - f382) <= tol
+        result := "0.382"
+    if not na(f500) and math.abs(price - f500) <= tol
+        result := "0.5"
+    if not na(f618) and math.abs(price - f618) <= tol
+        result := "0.618"
+    if not na(f786) and math.abs(price - f786) <= tol
+        result := "0.786"
+    result
+
+f_drawFibLevel(array<line> lines, array<label> labels, int startBar, int endBar, float level, string txt, color col) =>
+    if not na(level)
+        ln = line.new(startBar, level, endBar, level, color = col, style = line.style_dashed)
+        array.push(lines, ln)
+        lb = label.new(endBar, level, txt, style = label.style_label_left, color = color.new(col, 100), textcolor = col, size = size.tiny)
+        array.push(labels, lb)
+    true
+
+// -----------------------------------------------------------------------------
+// RISK ENGINE HELPERS (Madde 44-49) — pure functions, no outer-scope
+// references, so they work identically for the LONG and SHORT structural
+// ideas below (Madde 50 long/short symmetry). `stopRaw`/`targetRaw` are the
+// UN-buffered structural levels (nearest opposing zone edge or last swing);
+// this function applies the ATR buffer and the stop-distance/R:R gates.
+// -----------------------------------------------------------------------------
+f_riskCalc(bool isLong, float entry, float stopRaw, float targetRaw, float atrVal, float atrBufferMult, float maxStopPct, float minRR) =>
+    // v0.11.1 QA FIX: `stopRaw` is the RAW structural reference (a fallback
+    // last-swing price can be stale — the swing itself is only "known"
+    // pivotRight bars after the fact, Madde 14, while price may have
+    // already closed beyond it with a confirmed BOS). If entry has ALREADY
+    // crossed past stopRaw, the structural condition that would justify
+    // this LONG/SHORT idea is already gone — reporting a "stop"/R:R past
+    // that point would be evidence built on an already-broken premise
+    // (Madde 139/140: never a fabricated result). Checked on the
+    // UN-buffered stopRaw (the real structural line; the ATR buffer is
+    // only noise padding on top of it, Madde 44).
+    bool alreadyBreached = not na(stopRaw) and (isLong ? entry <= stopRaw : entry >= stopRaw)
+    float stopLevel = na(stopRaw) or na(atrVal) ? na : (isLong ? stopRaw - atrVal * atrBufferMult : stopRaw + atrVal * atrBufferMult)
+    float stopDist = na(stopLevel) ? na : math.abs(entry - stopLevel)
+    bool stopTooWide = not na(stopDist) and entry > 0 and stopDist > entry * maxStopPct / 100
+    float rewardDist = na(targetRaw) ? na : math.abs(targetRaw - entry)
+    float rr = (alreadyBreached or na(stopDist) or stopDist <= 0 or na(rewardDist)) ? na : rewardDist / stopDist
+    bool rrOk = not na(rr) and rr >= minRR
+    string status = na(stopLevel) ? "NO STRUCTURAL STOP" :
+         alreadyBreached ? "ALREADY INVALIDATED" :
+         na(targetRaw) ? "NO TARGET ZONE" :
+         stopTooWide ? "STOP TOO WIDE" :
+         not rrOk ? "R:R BELOW MIN" :
+         "OK"
+    [stopLevel, targetRaw, stopDist, rewardDist, rr, status]
+
+// Madde 48: Risk Amount = Equity x Risk%, Position Size = Risk Amount / Stop
+// Distance. Leverage only changes MARGIN required, never the risk-based
+// position size itself (Madde 48: leverage never assumed without an
+// explicit, user-set value — default 1.0 = spot/no leverage).
+f_positionSize(float equity, float riskPct, float stopDist, float entry, float leverage) =>
+    float riskAmount = equity * riskPct / 100
+    float posSize = (na(stopDist) or stopDist <= 0) ? na : riskAmount / stopDist
+    float notional = na(posSize) ? na : posSize * entry
+    float margin = na(notional) or leverage <= 0 ? na : notional / leverage
+    [riskAmount, posSize, notional, margin]
+
+f_riskLine(float stopLevel, float targetLevel, float rr, string status) =>
+    "stop " + (na(stopLevel) ? "N/A" : str.tostring(stopLevel)) +
+     "  target " + (na(targetLevel) ? "N/A" : str.tostring(targetLevel)) +
+     "  R:R " + (na(rr) ? "N/A" : str.tostring(rr, "#.##")) +
+     "  " + status
+
+f_posSizeLine(float posSize, float notional, float margin) =>
+    na(posSize) ? "N/A" : str.tostring(posSize, "#.####") + " BTC  ($" + str.tostring(notional, "#.##") + " notional, $" + str.tostring(margin, "#.##") + " margin)"
+
+// -----------------------------------------------------------------------------
+// INPUTS — DATA GATE
+// -----------------------------------------------------------------------------
+grpSymbol = "Data Gate — Symbol & Source Validation"
+i_expectedExchange = input.string("OKX", "Expected Exchange (syminfo.prefix)", group = grpSymbol,
+     tooltip = "Uyuşmazsa DATA SOURCE WARNING üretilir (soft) — sistem otomatik durdurulmaz.")
+i_expectedBase  = input.string("BTC",  "Expected Base Currency",  group = grpSymbol,
+     tooltip = "Uyuşmazsa DATA INVALID üretilir (hard) — bu sistem yalnızca BTC içindir.")
+i_expectedQuote = input.string("USDT", "Expected Quote Currency", group = grpSymbol)
+
+grpGate = "Data Gate — Thresholds"
+i_minBars = input.int(210, "Minimum Required Historical Bars", minval = 1, group = grpGate,
+     tooltip = "EMA200 gibi göstergeler için gereken minimum geçmiş bar sayısı.")
+i_gapMult = input.float(3.0, "Data Gap Multiplier (x expected bar interval)", minval = 1.1, group = grpGate)
+i_abnormalAtrMult = input.float(8.0, "Abnormal Bar Range Multiplier (x ATR14)", minval = 1.0, group = grpGate)
+i_staleBarsThreshold = input.int(10, "Stale Feed — Consecutive Identical Bars", minval = 2, group = grpGate)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MARKET REGIME (Madde 9, 10, 13)
+// -----------------------------------------------------------------------------
+grpTrend = "Market Regime — Trend"
+i_emaFastLen = input.int(20, "EMA Fast", minval = 1, group = grpTrend)
+i_emaMidLen  = input.int(50, "EMA Mid", minval = 1, group = grpTrend)
+i_emaSlowLen = input.int(200, "EMA Slow", minval = 1, group = grpTrend)
+i_slopeLookback = input.int(10, "EMA Mid Slope Lookback (bars)", minval = 1, group = grpTrend)
+i_adxLen = input.int(14, "ADX/DMI Length", minval = 1, group = grpTrend)
+i_adxTrendThreshold = input.float(20.0, "ADX Trend Threshold", minval = 1, group = grpTrend,
+     tooltip = "Başlangıç hipotezi — optimize edilmedi (Madde 10, 47).")
+
+grpRange = "Market Regime — Range Detection"
+i_rangeLookback = input.int(20, "Range Containment Lookback (bars)", minval = 2, group = grpRange)
+i_rangeAtrThreshold = input.float(2.5, "Range Containment Threshold (band width / ATR)", minval = 0.5, group = grpRange)
+
+grpRegimePersist = "Market Regime — Persistence"
+i_regimeConfirmBars = input.int(3, "Regime Confirmation Bars (hysteresis)", minval = 1, group = grpRegimePersist,
+     tooltip = "Tek barlık flip-flop'u önlemek için minimum onay bar sayısı (Madde 10).")
+
+grpVol = "Volatility Regime"
+i_volLookback = input.int(100, "ATR% Percentile Lookback (bars)", minval = 10, group = grpVol)
+i_volLowPct = input.float(25.0, "Low Vol Percentile Ceiling", minval = 0, maxval = 100, group = grpVol)
+i_volHighPct = input.float(75.0, "High Vol Percentile Floor", minval = 0, maxval = 100, group = grpVol)
+i_volExtremePct = input.float(90.0, "Extreme Vol Percentile Floor", minval = 0, maxval = 100, group = grpVol)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MARKET STRUCTURE (Madde 14)
+// -----------------------------------------------------------------------------
+grpStructure = "Market Structure — Swing Detection"
+i_pivotLeft  = input.int(5, "Pivot Left Bars", minval = 1, group = grpStructure)
+i_pivotRight = input.int(5, "Pivot Right Bars", minval = 1, group = grpStructure,
+     tooltip = "Bir swing yalnızca sağında bu kadar bar oluştuktan sonra 'bilinir' (KNOWN_TIME != SWING_TIME, Madde 14). Repaint yok.")
+i_showStructureMarks = input.bool(true, "Show Swing/BOS/CHoCH Markers", group = grpStructure)
+
+// -----------------------------------------------------------------------------
+// INPUTS — SUPPORT/RESISTANCE ZONES (Madde 15, 16)
+// -----------------------------------------------------------------------------
+grpZone = "Support/Resistance Zones"
+i_maxZonesPerSide = input.int(6, "Max Zones per Side", minval = 1, maxval = 20, group = grpZone)
+i_clusterAtrMult = input.float(1.0, "Cluster Merge Distance (x ATR)", minval = 0.1, group = grpZone,
+     tooltip = "Madde 16 — yakın seviyeler tek zone'a birleştirilir, yüzlerce ayrı çizgi oluşmaz.")
+i_freshAgeBars = input.int(20, "Fresh Zone Age Ceiling (bars)", minval = 1, group = grpZone)
+i_staleAgeBars = input.int(150, "Stale Zone Age Floor (bars)", minval = 1, group = grpZone)
+i_exhaustTouches = input.int(4, "Exhausted After N Touches", minval = 1, group = grpZone,
+     tooltip = "Madde 16 — touch sayısı tek başına kalite değildir; çok test edilen zone exhausted sayılır.")
+i_emaConfluenceAtrMult = input.float(0.5, "EMA Confluence Distance (x ATR)", minval = 0.05, group = grpZone)
+i_showZones = input.bool(true, "Show Zones on Chart", group = grpZone)
+
+// -----------------------------------------------------------------------------
+// INPUTS — FIBONACCI (Madde 17)
+// -----------------------------------------------------------------------------
+grpFib = "Fibonacci"
+i_showFib = input.bool(true, "Show Fibonacci Levels", group = grpFib)
+i_fibTouchAtrMult = input.float(0.25, "Fib Touch Tolerance (x ATR)", minval = 0.01, group = grpFib,
+     tooltip = "Yalnızca teşhis içindir (Madde 17: FIB TOUCH ≠ ENTRY).")
+
+// -----------------------------------------------------------------------------
+// INPUTS — BREAKOUT / RETEST STATE MACHINE (Madde 20-21)
+// -----------------------------------------------------------------------------
+grpBreakout = "Breakout / Retest State Machine"
+i_confirmDisplacementAtrMult = input.float(0.5, "Confirm Displacement (x ATR)", minval = 0.05, group = grpBreakout,
+     tooltip = "BREAKOUT_CANDIDATE -> CONFIRMED_BREAKOUT için seviyenin ötesinde gereken minimum mesafe.")
+i_candidateMaxBars = input.int(10, "Candidate Timeout (bars)", minval = 1, group = grpBreakout,
+     tooltip = "Bu bar sayısında displacement onaylanmazsa STALE (Madde 20).")
+i_retestAtrMult = input.float(0.3, "Retest Touch Tolerance (x ATR)", minval = 0.05, group = grpBreakout)
+i_retestMaxBars = input.int(30, "Retest Timeout (bars since confirmed)", minval = 1, group = grpBreakout,
+     tooltip = "Retest bu süre içinde sonuçlanmazsa STALE (Madde 20).")
+i_showBreakoutMarks = input.bool(true, "Show Breakout FSM Markers", group = grpBreakout)
+
+// -----------------------------------------------------------------------------
+// INPUTS — PRICE ACTION (Madde 22)
+// -----------------------------------------------------------------------------
+grpPriceAction = "Price Action"
+i_wickBodyMult = input.float(2.0, "Hammer/Star: Long Wick vs Body Multiplier", minval = 0.5, group = grpPriceAction)
+i_smallWickMaxMult = input.float(0.5, "Hammer/Star: Opposite Wick Max (x body)", minval = 0, group = grpPriceAction)
+i_smallBodyMaxRatio = input.float(0.35, "Hammer/Star: Max Body/Range", minval = 0.05, maxval = 1, group = grpPriceAction)
+i_rejectionRangeMult = input.float(0.5, "Rejection: Min Wick (x bar range)", minval = 0.1, maxval = 0.9, group = grpPriceAction)
+i_strongCloseThreshold = input.float(0.7, "Strong Close Threshold (close location)", minval = 0.5, maxval = 1, group = grpPriceAction)
+i_showPriceActionMarks = input.bool(true, "Show Price Action Markers", group = grpPriceAction)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MOMENTUM (Madde 23)
+// -----------------------------------------------------------------------------
+grpMomentum = "Momentum"
+i_rsiLen = input.int(14, "RSI Length", minval = 1, group = grpMomentum)
+i_rsiOverbought = input.float(70, "RSI Overbought", minval = 50, maxval = 100, group = grpMomentum)
+i_rsiOversold = input.float(30, "RSI Oversold", minval = 0, maxval = 50, group = grpMomentum)
+i_macdFast = input.int(12, "MACD Fast Length", minval = 1, group = grpMomentum)
+i_macdSlow = input.int(26, "MACD Slow Length", minval = 1, group = grpMomentum)
+i_macdSignal = input.int(9, "MACD Signal Length", minval = 1, group = grpMomentum)
+i_momSlopeLookback = input.int(3, "Slope Lookback (bars)", minval = 1, group = grpMomentum)
+i_showMomentumMarks = input.bool(true, "Show Divergence Markers", group = grpMomentum)
+
+// -----------------------------------------------------------------------------
+// INPUTS — PARTICIPATION (Madde 24)
+// -----------------------------------------------------------------------------
+grpParticipation = "Participation"
+i_rvolLookback = input.int(20, "RVOL Average Volume Lookback (bars)", minval = 1, group = grpParticipation)
+i_expansionRvolMult = input.float(1.5, "Volume Expansion Threshold (x avg)", minval = 1.0, group = grpParticipation)
+i_contractionRvolMult = input.float(0.5, "Volume Contraction Threshold (x avg)", minval = 0.05, maxval = 1.0, group = grpParticipation)
+i_obvSlopeLookback = input.int(3, "OBV Slope Lookback (bars)", minval = 1, group = grpParticipation)
+i_vwapLookback = input.int(20, "Rolling VWAP Lookback (bars)", minval = 1, group = grpParticipation,
+     tooltip = "N-bar rolling volume-weighted average, NOT session-anchored — Madde 24: BTC 24/7, session-open kavramı yok.")
+i_showParticipationMarks = input.bool(true, "Show Participation Markers / VWAP", group = grpParticipation)
+
+// -----------------------------------------------------------------------------
+// INPUTS — MTF REFINEMENT (Madde 28-32)
+// -----------------------------------------------------------------------------
+grpMtf = "MTF Refinement"
+i_mtfMode = input.string("AUTO", "HTF Selection", options = ["AUTO", "MANUAL"], group = grpMtf,
+     tooltip = "AUTO: Madde 28 varsayılan rollerinin basitleştirilmiş hali (chart <=15m->1H, <=1H->4H, <=4H->1D, >=1D->N/A). MANUAL: aşağıdaki HTF'i kullan.")
+i_mtfManualTf = input.timeframe("240", "Manual HTF (only used if AUTO is off)", group = grpMtf)
+i_mtfEmaLen = input.int(50, "HTF Trend EMA Length", minval = 1, group = grpMtf)
+i_mtfSlopeLookback = input.int(5, "HTF EMA Slope Lookback (HTF bars)", minval = 1, group = grpMtf)
+
+// -----------------------------------------------------------------------------
+// INPUTS — RISK ENGINE (Madde 44-49) — diagnostic calculator only, no
+// setup/trigger exists yet to actually place a trade against these numbers.
+// -----------------------------------------------------------------------------
+grpRisk = "Risk Engine — diagnostic only (no live setup/trigger yet)"
+i_riskAtrBufferMult = input.float(0.5, "Stop ATR Buffer (x ATR beyond structural level)", minval = 0, group = grpRisk,
+     tooltip = "Madde 44-45: stop = STRUCTURAL INVALIDATION + ATR BUFFER, asla rastgele %.")
+i_maxStopDistancePct = input.float(5.0, "Max Acceptable Stop Distance (% of price)", minval = 0.1, group = grpRisk,
+     tooltip = "Madde 45 — stop bu mesafeden uzaksa STOP TOO WIDE.")
+i_minRR = input.float(1.5, "Minimum R:R (hard gate)", minval = 0.1, group = grpRisk,
+     tooltip = "Madde 47 — başlangıç hipotezi, optimize edilmedi (Madde 10). Tercih edilen: 2.0+.")
+i_accountEquity = input.float(10000, "Account Equity (USDT, diagnostic only)", minval = 0, group = grpRisk)
+i_riskPctPerTrade = input.float(1.0, "Risk % per Trade", minval = 0.01, maxval = 100, group = grpRisk,
+     tooltip = "Madde 48: Risk Amount = Equity x Risk%.")
+i_leverage = input.float(1.0, "Leverage (1.0 = spot / no leverage)", minval = 1.0, group = grpRisk,
+     tooltip = "Madde 48 — leverage açıkça belirtilmeden varsayılmaz; varsayılan 1.0 (spot, kaldıraçsız).")
+
+// -----------------------------------------------------------------------------
+// INPUTS — VETO ENGINE (Madde 52-53)
+// -----------------------------------------------------------------------------
+grpVeto = "Veto Engine — hard vetoes block CONFIRMED, never hidden"
+i_entryPendingMaxBars = input.int(20, "ENTRY_PENDING Veto-Blocked Timeout (bars)", minval = 1, group = grpVeto,
+     tooltip = "Madde 55 v3.1.1 EK — breakoutState ENTRY'ye ulaştığı ama hard veto yüzünden CONFIRMED'e geçemediği durumda, bu bar sayısından sonra FLAT'e döner (o zamana kadar ENTRY_PENDING'de görünür kalır).")
+
+// -----------------------------------------------------------------------------
+// INPUTS — EXECUTION / POSITION LIFECYCLE (Madde 56-58) — Phase G, part 1.
+// Only initial stop + target are implemented as exits this turn (Madde 57
+// lists break-even/trailing/time-stop/partial-exit/emergency-exit too, all
+// deferred — see header). i_cooldownBars satisfies ONLY Madde 56's minimum
+// requirement (don't re-enter immediately after an exit); it is explicitly
+// NOT EK-D's validated, cross-setup-aware cooldown, which needs actual
+// trade-outcome statistics this indicator doesn't track.
+// -----------------------------------------------------------------------------
+grpExecution = "Execution — Position Lifecycle (Madde 56-58, initial stop/target only)"
+i_cooldownBars = input.int(5, "Cooldown After Exit (bars)", minval = 0, group = grpExecution,
+     tooltip = "Madde 56 — pozisyon kapandıktan hemen sonra yeni CONFIRMED üretilmesini engeller. Başlangıç hipotezi (Madde 10/47 ile aynı disiplin) — EK-D'nin backtest ile doğrulanmış, cross-setup-farkında cooldown'u değildir.")
+i_showPositionMarks = input.bool(true, "Show Position Stop/Target Lines + Exit Marker", group = grpExecution)
+
+// -----------------------------------------------------------------------------
+// INPUTS — ALERT ENGINE (Madde 116-117) — Phase G, part 2.
+// -----------------------------------------------------------------------------
+grpAlerts = "Alert Engine — state-transition based, fires on confirmed bar (see delay note, Madde 125/127)"
+i_enableAlerts = input.bool(true, "Enable Alerts", group = grpAlerts,
+     tooltip = "Madde 116 — WATCH ENTER / SETUP ENTER / CONFIRMED LONG / CONFIRMED SHORT / HARD VETO / EXIT / COOLDOWN, her biri yalnızca o duruma GİRİLDİĞİNDE bir kez (Madde 116: 'aynı state her candle'da tekrar alert vermemeli'). Gerçek bildirim almak için TradingView'de bu indikatöre 'Any alert() function call' tipinde bir alarm kurmanız gerekir.")
+
+// -----------------------------------------------------------------------------
+// INPUTS — REMAINING SETUP ARCHETYPES (Madde 18) — shared by Pullback
+// Continuation, Range Rejection, Mean Reversion's reaction FSM (see that
+// section for why one shared timeout, not three separate inputs, is enough).
+// -----------------------------------------------------------------------------
+grpSetupExtra = "Setup Classifier — Pullback / Range Rejection / Mean Reversion"
+i_reactionPendingMaxBars = input.int(10, "Reaction Setup PENDING Timeout (bars)", minval = 1, group = grpSetupExtra,
+     tooltip = "Zone/koşul dokunuşundan sonra tetikleyici (trigger) bu bar sayısı içinde gelmezse STALE olur.")
+
+// v0.15.1 QA FIX (🤍, Madde 125): user reported the two-table split
+// (top_right/bottom_right, v0.15.0) still overlapped on a tablet. Replaced
+// with a genuine pagination system — one comprehensive row list (the old
+// COMPACT/FULL split is retired; COMPACT was a different curated subset,
+// which only adds maintenance burden once pages exist), one small table,
+// shows i_diagRowsPerPage rows at a time, "PAGE" input picks which slice.
+// This is now the PERMANENT mechanism until the real Madde 114 panel
+// exists: any future module's new diagnostics row is added via
+// f_addDiagRow (see DIAGNOSTICS section) — never a new table, never a
+// manually-sized single block again.
+grpDebug = "Diagnostics (temporary — replaced by the compact panel in a later phase)"
+i_showDebug = input.bool(true, "Show Diagnostics Table", group = grpDebug)
+i_diagRowsPerPage = input.int(11, "Diagnostics Rows per Page", minval = 4, maxval = 30, group = grpDebug,
+     tooltip = "Taşma olmadan sığan satır sayısı — kendi ekranınızda test edip ayarlayın (düşürmek daha kısa/daha çok sayfa demektir).")
+i_diagPage = input.int(1, "Diagnostics Page", minval = 1, maxval = 10, group = grpDebug,
+     tooltip = "Toplam sayfa sayısı satır sayısına göre otomatik hesaplanır ve panelin başlığında (PAGE x/y) gösterilir; bu değer o aralığın dışındaysa son sayfada kalınır.")
+i_showBg    = input.bool(true, "Highlight DATA_INVALID bars", group = grpDebug)
+
+// -----------------------------------------------------------------------------
+// SYMBOL / DATA SOURCE VALIDATION (Madde 1, 8)
+// -----------------------------------------------------------------------------
+exchangeOK   = str.upper(syminfo.prefix)      == str.upper(i_expectedExchange)
+baseOK       = str.upper(syminfo.basecurrency) == str.upper(i_expectedBase)
+quoteOK      = str.upper(syminfo.currency)     == str.upper(i_expectedQuote)
+instrumentOK = baseOK and quoteOK   // hard: wrong instrument entirely (not BTC/USDT)
+
+// Spot vs perpetual: never asserted with false confidence (Madde 1, 127, 139, 140).
+tickerUpper     = str.upper(syminfo.ticker)
+isPerpByType    = syminfo.type == "swap"
+isPerpByTicker  = str.contains(tickerUpper, ".P") or str.contains(tickerUpper, "SWAP") or str.contains(tickerUpper, "PERP")
+isSpotByType    = syminfo.type == "spot" or syminfo.type == "crypto"
+marketTypeGuess = isPerpByType or isPerpByTicker ? "PERPETUAL (heuristic — verify)" :
+                   isSpotByType and not isPerpByTicker ? "SPOT (heuristic — verify)" :
+                   "UNKNOWN — VERIFY MANUALLY"
+
+// -----------------------------------------------------------------------------
+// DATA GATE CHECKS (Madde 7) — computed every tick for live diagnostics
+// -----------------------------------------------------------------------------
+ohlcValid = not na(open) and not na(high) and not na(low) and not na(close) and
+             high >= low and high >= open and high >= close and low <= open and low <= close
+
+volumeValid = not na(volume)   // NA stays NA — never silently treated as 0 (Madde 7)
+
+sufficientHistory = bar_index >= (i_minBars - 1)
+
+atrValue = ta.atr(14)
+atrValid = not na(atrValue) and atrValue > 0
+
+expectedIntervalMs = timeframe.in_seconds() * 1000
+chartTypeOK = not na(expectedIntervalMs) and expectedIntervalMs > 0
+dataGapDetected = chartTypeOK and bar_index > 0 and not na(time[1]) and
+     (time - time[1]) > expectedIntervalMs * i_gapMult
+
+barRange = high - low
+abnormalBar = atrValid and barRange > atrValue * i_abnormalAtrMult
+
+var int staleBars = 0
+if barstate.isconfirmed
+    isStaleRepeat = bar_index > 0 and open == open[1] and high == high[1] and low == low[1] and close == close[1]
+    staleBars := isStaleRepeat ? staleBars + 1 : 0
+staleDataDetected = staleBars >= i_staleBarsThreshold
+
+// Aggregate — LIVE (not yet confirmed, for immediate diagnostics only; Madde 34)
+liveDataValid = instrumentOK and ohlcValid and volumeValid and sufficientHistory and
+     atrValid and not dataGapDetected and not abnormalBar and not staleDataDetected
+
+// -----------------------------------------------------------------------------
+// STATE TRANSITION — CONFIRMED BAR ONLY (Madde 33-34, non-repainting standard)
+// -----------------------------------------------------------------------------
+if barstate.isconfirmed
+    if not liveDataValid
+        currentState := EngineState.DATA_INVALID
+    else if currentState == EngineState.DATA_INVALID
+        currentState := EngineState.FLAT
+    // else: currentState stays whatever it already was here — the actual
+    // FLAT/WATCH/SETUP/ENTRY_PENDING refinement now happens in a SECOND
+    // confirmed-bar block, further down, once the Setup Classifier's inputs
+    // (breakoutState, primaryRegime) are computed (Madde 18-19). This block
+    // only owns the DATA_INVALID gate. CONFIRMED_LONG/CONFIRMED_SHORT/
+    // IN_POSITION/EXIT/COOLDOWN still do NOT exist — those require the Veto
+    // Engine (Madde 52-53) and Final Decision Engine (Madde 37), neither of
+    // which is built yet.
+
+// -----------------------------------------------------------------------------
+// MARKET REGIME — TREND (Madde 10, 13). Structure/Zone exist now (below) but
+// are NOT yet wired into Regime Confidence — see header note.
+// -----------------------------------------------------------------------------
+emaFast = ta.ema(close, i_emaFastLen)
+emaMid  = ta.ema(close, i_emaMidLen)
+emaSlow = ta.ema(close, i_emaSlowLen)
+
+emaAlignmentBull = emaFast > emaMid and emaMid > emaSlow
+emaAlignmentBear = emaFast < emaMid and emaMid < emaSlow
+priceAboveAll = close > emaFast and close > emaMid and close > emaSlow
+priceBelowAll = close < emaFast and close < emaMid and close < emaSlow
+slopeUp   = emaMid > emaMid[i_slopeLookback]
+slopeDown = emaMid < emaMid[i_slopeLookback]
+
+[diPlus, diMinus, adxValue] = ta.dmi(i_adxLen, i_adxLen)
+diBullish   = diPlus > diMinus
+trendStrong = not na(adxValue) and adxValue >= i_adxTrendThreshold
+
+bullVotes = (emaAlignmentBull ? 1 : 0) + (priceAboveAll ? 1 : 0) + (slopeUp ? 1 : 0) + (diBullish ? 1 : 0)
+bearVotes = (emaAlignmentBear ? 1 : 0) + (priceBelowAll ? 1 : 0) + (slopeDown ? 1 : 0) + (not diBullish ? 1 : 0)
+
+rangeBandWidth = ta.highest(high, i_rangeLookback) - ta.lowest(low, i_rangeLookback)
+priceContained = atrValid and rangeBandWidth < atrValue * i_rangeAtrThreshold
+
+rawRegime = trendStrong and bullVotes >= 3 ? RegimeType.BULL_TREND :
+             trendStrong and bearVotes >= 3 ? RegimeType.BEAR_TREND :
+             not trendStrong and priceContained ? RegimeType.RANGE :
+             RegimeType.TRANSITION
+
+// Persistence / hysteresis (Madde 10) — only advances on confirmed, data-valid bars.
+var RegimeType primaryRegime = RegimeType.TRANSITION
+var RegimeType pendingRegime = RegimeType.TRANSITION
+var int pendingBars  = 0
+var int barsInRegime = 0
+
+if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
+    pendingBars  := rawRegime == pendingRegime ? pendingBars + 1 : 1
+    pendingRegime := rawRegime
+
+    if pendingBars >= i_regimeConfirmBars and primaryRegime != pendingRegime
+        primaryRegime := pendingRegime
+        barsInRegime  := 1
+    else
+        barsInRegime := barsInRegime + 1
+
+// -----------------------------------------------------------------------------
+// VOLATILITY REGIME (Madde 9, 26) — separate overlay, never mixed with primaryRegime.
+// -----------------------------------------------------------------------------
+atrPct     = atrValid ? (atrValue / close) * 100 : na
+atrPctRank = na(atrPct) ? na : ta.percentrank(atrPct, i_volLookback)
+
+volRegime = na(atrPctRank) ? VolRegime.NORMAL_VOL :
+             atrPctRank >= i_volExtremePct ? VolRegime.EXTREME_VOL :
+             atrPctRank >= i_volHighPct ? VolRegime.HIGH_VOL :
+             atrPctRank <= i_volLowPct ? VolRegime.LOW_VOL :
+             VolRegime.NORMAL_VOL
+
+// -----------------------------------------------------------------------------
+// REGIME CONFIDENCE (Madde 11 + v3.1 EK) — NOT a binding gate yet (that belongs
+// to the Decision Engine, Madde 37, Phase F); exposed here for later use.
+// Structure-agreement factor still NOT included (see header note).
+// -----------------------------------------------------------------------------
+maxVotes = math.max(bullVotes, bearVotes)
+trendAgreementScore = maxVotes >= 4 ? 2 : maxVotes == 3 ? 1 : 0
+volStabilityScore   = volRegime == VolRegime.EXTREME_VOL ? 0 : 1
+persistenceScore    = barsInRegime >= i_regimeConfirmBars * 2 ? 1 : 0
+confidenceScoreRaw  = trendAgreementScore + volStabilityScore + persistenceScore
+
+regimeConfidence = primaryRegime == RegimeType.TRANSITION ? ConfidenceLevel.LOW :
+                     confidenceScoreRaw >= 3 ? ConfidenceLevel.HIGH :
+                     confidenceScoreRaw == 2 ? ConfidenceLevel.MEDIUM :
+                     ConfidenceLevel.LOW
+
+// -----------------------------------------------------------------------------
+// MARKET STRUCTURE — CENTRAL CONFIRMED-SWING FUNCTION (Madde 14 v3.1 EK)
+// ta.pivothigh/low are called UNCONDITIONALLY every bar (required for correct
+// internal history tracking); only the resulting state update is gated on
+// barstate.isconfirmed below.
+// -----------------------------------------------------------------------------
+pivotHighPrice = ta.pivothigh(i_pivotLeft, i_pivotRight)
+pivotLowPrice  = ta.pivotlow(i_pivotLeft, i_pivotRight)
+
+// Computed here (unconditional, top-level, before Momentum's own section
+// further below) SOLELY so the swing-registration blocks below can snapshot
+// RSI-at-swing-bar for divergence detection (Madde 23) — divergence must
+// reuse the SAME central swing function rather than inventing its own pivot
+// search (Madde 14 v3.1 EK). The full Momentum state classification lives in
+// its own section later, after Price Action.
+rsiValue = ta.rsi(close, i_rsiLen)
+
+var float lastSwingHighPrice    = na   // last CONFIRMED swing high (KNOWN at lastSwingHighKnownBar)
+var int   lastSwingHighSwingBar = na   // SWING_TIME (bar it actually occurred)
+var int   lastSwingHighKnownBar = na   // KNOWN_TIME (bar the script learned about it)
+var float prevSwingHighPrice    = na
+var float lastSwingHighRSI      = na   // RSI value AT the swing bar (SWING_TIME), for divergence
+var float prevSwingHighRSI      = na
+
+var float lastSwingLowPrice    = na
+var int   lastSwingLowSwingBar = na
+var int   lastSwingLowKnownBar = na
+var float prevSwingLowPrice    = na
+var float lastSwingLowRSI      = na
+var float prevSwingLowRSI      = na
+
+var SwingLabel lastHighLabel = SwingLabel.NONE
+var SwingLabel lastLowLabel  = SwingLabel.NONE
+var StructureBias structureBias = StructureBias.NEUTRAL
+var StructureEvent lastStructureEvent = StructureEvent.NONE
+var int lastStructureEventBar = na
+
+// Zone stores (Madde 15, 16) — resistance from confirmed swing highs, support
+// from confirmed swing lows.
+var array<Zone> resistanceZones = array.new<Zone>()
+var array<Zone> supportZones    = array.new<Zone>()
+
+// Break-of-level checks against the most recently CONFIRMED swing levels.
+// Called UNCONDITIONALLY every bar (ta.crossover/crossunder must not be
+// called inside an `if` — Madde 124 syntax/logic QA); only the resulting
+// state update (below) is confirmed-bar-gated, so no repaint/future leak.
+crossedAboveLastHigh = ta.crossover(close, lastSwingHighPrice)
+crossedBelowLastLow  = ta.crossunder(close, lastSwingLowPrice)
+
+// Captured BEFORE this bar's swing registration below can mutate
+// lastSwingHighPrice/lastSwingLowPrice — the Breakout FSM (further below)
+// needs the level as it stood WHEN the cross happened, not a possibly
+// already-updated value from later in this same confirmed bar.
+brokenHighLevel = lastSwingHighPrice
+brokenLowLevel  = lastSwingLowPrice
+
+bosUpEvent    = false
+bosDownEvent  = false
+chochUpEvent  = false
+chochDownEvent = false
+
+if barstate.isconfirmed
+    // 1) Register new confirmed swings (Madde 14 — KNOWN_TIME vs SWING_TIME)
+    //    and create/cluster the corresponding zone (Madde 15, 16). Zone body
+    //    is the swing candle's wick-to-body span — no arbitrary ATR guess.
+    if not na(pivotHighPrice)
+        prevSwingHighPrice := lastSwingHighPrice
+        prevSwingHighRSI := lastSwingHighRSI
+        lastHighLabel := na(prevSwingHighPrice) ? SwingLabel.NONE : (pivotHighPrice > prevSwingHighPrice ? SwingLabel.HH : SwingLabel.LH)
+        lastSwingHighPrice := pivotHighPrice
+        lastSwingHighRSI := rsiValue[i_pivotRight]   // RSI AT the swing bar, matching pivotHighPrice's own SWING_TIME
+        lastSwingHighSwingBar := bar_index - i_pivotRight
+        lastSwingHighKnownBar := bar_index
+        zoneLowBoundHigh = math.max(open[i_pivotRight], close[i_pivotRight])
+        f_upsertZone(resistanceZones, pivotHighPrice, zoneLowBoundHigh, bar_index - i_pivotRight, bar_index, atrValue, i_clusterAtrMult, i_maxZonesPerSide)
+
+    if not na(pivotLowPrice)
+        prevSwingLowPrice := lastSwingLowPrice
+        prevSwingLowRSI := lastSwingLowRSI
+        lastLowLabel := na(prevSwingLowPrice) ? SwingLabel.NONE : (pivotLowPrice > prevSwingLowPrice ? SwingLabel.HL : SwingLabel.LL)
+        lastSwingLowPrice := pivotLowPrice
+        lastSwingLowRSI := rsiValue[i_pivotRight]
+        lastSwingLowSwingBar := bar_index - i_pivotRight
+        lastSwingLowKnownBar := bar_index
+        zoneHighBoundLow = math.min(open[i_pivotRight], close[i_pivotRight])
+        f_upsertZone(supportZones, zoneHighBoundLow, pivotLowPrice, bar_index - i_pivotRight, bar_index, atrValue, i_clusterAtrMult, i_maxZonesPerSide)
+
+    // 2) BOS / CHoCH — break of a previously CONFIRMED swing level (Madde 14, 61).
+    // First break after NEUTRAL establishes initial bias (treated as CHoCH);
+    // a break agreeing with current bias is BOS (continuation), a break
+    // against it is CHoCH (reversal).
+    if crossedAboveLastHigh
+        if structureBias == StructureBias.BULLISH
+            bosUpEvent := true
+            lastStructureEvent := StructureEvent.BOS_UP
+        else
+            chochUpEvent := true
+            structureBias := StructureBias.BULLISH
+            lastStructureEvent := StructureEvent.CHOCH_UP
+        lastStructureEventBar := bar_index
+
+    if crossedBelowLastLow
+        if structureBias == StructureBias.BEARISH
+            bosDownEvent := true
+            lastStructureEvent := StructureEvent.BOS_DOWN
+        else
+            chochDownEvent := true
+            structureBias := StructureBias.BEARISH
+            lastStructureEvent := StructureEvent.CHOCH_DOWN
+        lastStructureEventBar := bar_index
+
+    // 3) Ongoing touch-count / broken-status maintenance for ALL existing
+    //    zones, every confirmed bar (Madde 15, 16) — independent of whether
+    //    a new swing formed this bar.
+    f_updateZones(resistanceZones, true, high, low, close, bar_index)
+    f_updateZones(supportZones, false, high, low, close, bar_index)
+
+swingHighAgeText = na(lastSwingHighSwingBar) ? "N/A" : str.tostring(bar_index - lastSwingHighSwingBar) + " bars ago"
+swingLowAgeText  = na(lastSwingLowSwingBar) ? "N/A" : str.tostring(bar_index - lastSwingLowSwingBar) + " bars ago"
+lastEventAgeText = na(lastStructureEventBar) ? "" : " (" + str.tostring(bar_index - lastStructureEventBar) + " bars ago)"
+
+nearestResIdx = f_nearestZone(resistanceZones, close)
+nearestSupIdx = f_nearestZone(supportZones, close)
+resZoneText = f_zoneSummary(resistanceZones, nearestResIdx, emaFast, emaMid, emaSlow, atrValue, i_emaConfluenceAtrMult, bar_index, i_freshAgeBars, i_staleAgeBars, i_exhaustTouches)
+supZoneText = f_zoneSummary(supportZones, nearestSupIdx, emaFast, emaMid, emaSlow, atrValue, i_emaConfluenceAtrMult, bar_index, i_freshAgeBars, i_staleAgeBars, i_exhaustTouches)
+
+// -----------------------------------------------------------------------------
+// FIBONACCI (Madde 17) — active leg = the two most recently confirmed swings
+// (central swing function above); level(ratio) is a pure derivation of those
+// already-confirmed prices, so no separate confirmed-bar gate is needed here.
+// -----------------------------------------------------------------------------
+legIsUp   = not na(lastSwingHighSwingBar) and not na(lastSwingLowSwingBar) and lastSwingHighSwingBar > lastSwingLowSwingBar
+legIsDown = not na(lastSwingHighSwingBar) and not na(lastSwingLowSwingBar) and lastSwingLowSwingBar > lastSwingHighSwingBar
+fibValid  = legIsUp or legIsDown
+legStartBar = legIsUp ? lastSwingLowSwingBar : legIsDown ? lastSwingHighSwingBar : na
+
+fib236 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.236) : na
+fib382 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.382) : na
+fib500 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.5)   : na
+fib618 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.618) : na
+fib786 = fibValid ? f_fibLevel(legIsUp, lastSwingHighPrice, lastSwingLowPrice, 0.786) : na
+
+// Diagnostic only — Madde 17: FIB TOUCH ≠ ENTRY. Real confirmation still
+// needs STRUCTURE + ZONE + TRIGGER + MOMENTUM, none combined yet.
+fibTouchLabel = f_fibTouchLabel(close, fib236, fib382, fib500, fib618, fib786, atrValue * i_fibTouchAtrMult)
+fibLegText = not fibValid ? "N/A (need 2 opposite confirmed swings)" :
+     legIsUp ? "UP: " + str.tostring(lastSwingLowPrice) + " -> " + str.tostring(lastSwingHighPrice) :
+     "DOWN: " + str.tostring(lastSwingHighPrice) + " -> " + str.tostring(lastSwingLowPrice)
+
+// -----------------------------------------------------------------------------
+// BREAKOUT / RETEST STATE MACHINE (Madde 20-21) — reuses crossedAboveLastHigh/
+// crossedBelowLastLow (already computed above for BOS/CHoCH) as the break
+// trigger; no new level logic. Only STRUCTURE-family evidence (price vs.
+// level) is used — no fabricated volume/momentum "quality" (Madde 21, those
+// modules don't exist yet).
+// -----------------------------------------------------------------------------
+var BreakoutFSMState breakoutState = BreakoutFSMState.PRE_BREAKOUT
+var BreakoutDirection breakoutDir  = BreakoutDirection.NONE
+var float breakoutLevel    = na
+var int   breakoutBar      = na   // bar the candidate started
+var int   breakoutConfBar  = na   // bar displacement was confirmed
+var int   breakoutStateBar = na   // bar of the last state change (for age display)
+
+if barstate.isconfirmed
+    if crossedAboveLastHigh and f_isIdleBreakoutState(breakoutState)
+        breakoutState := BreakoutFSMState.BREAKOUT_CANDIDATE
+        breakoutDir := BreakoutDirection.UP
+        breakoutLevel := brokenHighLevel
+        breakoutBar := bar_index
+        breakoutConfBar := na
+        breakoutStateBar := bar_index
+    else if crossedBelowLastLow and f_isIdleBreakoutState(breakoutState)
+        breakoutState := BreakoutFSMState.BREAKOUT_CANDIDATE
+        breakoutDir := BreakoutDirection.DOWN
+        breakoutLevel := brokenLowLevel
+        breakoutBar := bar_index
+        breakoutConfBar := na
+        breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE
+        candDisplacement = breakoutDir == BreakoutDirection.UP ? close - breakoutLevel : breakoutLevel - close
+        candFailed = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        if candFailed
+            breakoutState := BreakoutFSMState.FAILED_BREAKOUT
+            breakoutStateBar := bar_index
+        else if atrValid and candDisplacement >= atrValue * i_confirmDisplacementAtrMult
+            breakoutState := BreakoutFSMState.CONFIRMED_BREAKOUT
+            breakoutConfBar := bar_index
+            breakoutStateBar := bar_index
+        else if (bar_index - breakoutBar) > i_candidateMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT
+        confFailed = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        touchedLevel = atrValid and (breakoutDir == BreakoutDirection.UP ?
+             low <= breakoutLevel + atrValue * i_retestAtrMult :
+             high >= breakoutLevel - atrValue * i_retestAtrMult)
+        if confFailed
+            breakoutState := BreakoutFSMState.FAILED_BREAKOUT
+            breakoutStateBar := bar_index
+        else if touchedLevel
+            breakoutState := BreakoutFSMState.RETEST_PENDING
+            breakoutStateBar := bar_index
+        else if not na(breakoutConfBar) and (bar_index - breakoutConfBar) > i_retestMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.RETEST_PENDING
+        retestRejected = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        retestAccepted = breakoutDir == BreakoutDirection.UP ? close > breakoutLevel : close < breakoutLevel
+        if retestRejected
+            breakoutState := BreakoutFSMState.REVERSAL_CANDIDATE
+            breakoutStateBar := bar_index
+        else if retestAccepted
+            breakoutState := BreakoutFSMState.ENTRY
+            breakoutStateBar := bar_index
+        else if not na(breakoutConfBar) and (bar_index - breakoutConfBar) > i_retestMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+breakoutStateAgeText = na(breakoutStateBar) ? "" : " (" + str.tostring(bar_index - breakoutStateBar) + " bars ago)"
+breakoutStateText = f_breakoutStateLabel(breakoutState) + (breakoutDir == BreakoutDirection.NONE ? "" : " " + f_breakoutDirLabel(breakoutDir)) + breakoutStateAgeText
+breakoutLevelText = na(breakoutLevel) ? "N/A" : str.tostring(breakoutLevel)
+
+// -----------------------------------------------------------------------------
+// PRICE ACTION ENGINE (Madde 22) — mathematical primitives first (BODY/RANGE,
+// WICK/BODY, CLOSE LOCATION, RANGE/ATR), then a minimal named-pattern set
+// derived from them. `barRange` reused from the Data Gate section above (no
+// duplicate calculation, Madde 111). Computed live every bar but only
+// SNAPSHOTTED into the displayed var strings on confirmed bars (Madde 33-34),
+// same pattern as Structure's lastHighLabel/lastLowLabel.
+// -----------------------------------------------------------------------------
+paBodySize  = math.abs(close - open)
+paBodyHigh  = math.max(open, close)
+paBodyLow   = math.min(open, close)
+paUpperWick = high - paBodyHigh
+paLowerWick = paBodyLow - low
+
+paBodyToRange   = barRange > 0 ? paBodySize / barRange : na
+paCloseLocation = barRange > 0 ? (close - low) / barRange : na   // 0 = closed at low, 1 = closed at high
+paRangeToAtr    = atrValid ? barRange / atrValue : na
+
+paBullEngulf = close > open and close[1] < open[1] and close >= open[1] and open <= close[1]
+paBearEngulf = close < open and close[1] > open[1] and close <= open[1] and open >= close[1]
+
+paHammerShape = not na(paBodyToRange) and paLowerWick >= i_wickBodyMult * paBodySize and
+     paUpperWick <= paBodySize * i_smallWickMaxMult and paBodyToRange <= i_smallBodyMaxRatio
+paStarShape = not na(paBodyToRange) and paUpperWick >= i_wickBodyMult * paBodySize and
+     paLowerWick <= paBodySize * i_smallWickMaxMult and paBodyToRange <= i_smallBodyMaxRatio
+
+paUpperRejection = barRange > 0 and paUpperWick >= i_rejectionRangeMult * barRange
+paLowerRejection = barRange > 0 and paLowerWick >= i_rejectionRangeMult * barRange
+
+paInsideBar  = high <= high[1] and low >= low[1]
+paOutsideBar = high >= high[1] and low <= low[1]
+
+paStrongCloseUp   = not na(paCloseLocation) and paCloseLocation >= i_strongCloseThreshold
+paStrongCloseDown = not na(paCloseLocation) and paCloseLocation <= (1 - i_strongCloseThreshold)
+
+var string lastPriceActionPatterns = "NONE"
+var int    lastPriceActionBar      = na
+var float  lastBodyToRange         = na
+var float  lastCloseLocation       = na
+var float  lastRangeToAtr          = na
+
+if barstate.isconfirmed
+    paPatterns = array.new<string>()
+    if paBullEngulf
+        array.push(paPatterns, "BULL ENGULF")
+    if paBearEngulf
+        array.push(paPatterns, "BEAR ENGULF")
+    if paHammerShape
+        array.push(paPatterns, "HAMMER")
+    if paStarShape
+        array.push(paPatterns, "SHOOTING STAR")
+    if paUpperRejection
+        array.push(paPatterns, "UPPER REJECTION")
+    if paLowerRejection
+        array.push(paPatterns, "LOWER REJECTION")
+    if paInsideBar
+        array.push(paPatterns, "INSIDE BAR")
+    if paOutsideBar
+        array.push(paPatterns, "OUTSIDE BAR")
+    if paStrongCloseUp
+        array.push(paPatterns, "STRONG CLOSE UP")
+    if paStrongCloseDown
+        array.push(paPatterns, "STRONG CLOSE DOWN")
+    lastPriceActionPatterns := array.size(paPatterns) > 0 ? array.join(paPatterns, ", ") : "NONE"
+    lastPriceActionBar := bar_index
+    lastBodyToRange := paBodyToRange
+    lastCloseLocation := paCloseLocation
+    lastRangeToAtr := paRangeToAtr
+
+priceActionMetricsText = (na(lastBodyToRange) ? "N/A" : "body/range " + str.tostring(lastBodyToRange, "#.##")) +
+     "  close@" + (na(lastCloseLocation) ? "N/A" : str.tostring(lastCloseLocation, "#.##")) +
+     "  range/ATR " + (na(lastRangeToAtr) ? "N/A" : str.tostring(lastRangeToAtr, "#.##"))
+
+// -----------------------------------------------------------------------------
+// MOMENTUM ENGINE (Madde 23) — RSI + MACD histogram only (not also Stochastic/
+// CCI, Madde 6 double-counting ban). Goal is a STATE label, never "RSI level
+// = direction" (rsiValue/macdHist never feed any entry/direction logic here).
+// -----------------------------------------------------------------------------
+rsiRising  = rsiValue > rsiValue[i_momSlopeLookback]
+rsiFalling = rsiValue < rsiValue[i_momSlopeLookback]
+rsiOverboughtNow = rsiValue >= i_rsiOverbought
+rsiOversoldNow   = rsiValue <= i_rsiOversold
+
+[macdLine, macdSignal, macdHist] = ta.macd(close, i_macdFast, i_macdSlow, i_macdSignal)
+histRising  = macdHist > macdHist[i_momSlopeLookback]
+histFalling = macdHist < macdHist[i_momSlopeLookback]
+
+momDirection = macdHist > 0 ? MomentumDirection.BULLISH : macdHist < 0 ? MomentumDirection.BEARISH : MomentumDirection.NONE
+
+momState = rsiOversoldNow and rsiRising ? MomentumState.RECOVERING :
+     rsiOverboughtNow and rsiFalling ? MomentumState.WEAKENING :
+     momDirection == MomentumDirection.BULLISH and histRising ? MomentumState.ACCELERATING :
+     momDirection == MomentumDirection.BULLISH and histFalling ? MomentumState.DECELERATING :
+     momDirection == MomentumDirection.BEARISH and histFalling ? MomentumState.ACCELERATING :
+     momDirection == MomentumDirection.BEARISH and histRising ? MomentumState.DECELERATING :
+     MomentumState.NEUTRAL
+
+var MomentumState     lastMomentumState = MomentumState.NEUTRAL
+var MomentumDirection lastMomentumDir   = MomentumDirection.NONE
+var float             lastRsiSnapshot   = na
+var DivergenceType    lastDivergence    = DivergenceType.NONE
+var int               lastDivergenceBar = na
+
+if barstate.isconfirmed
+    lastMomentumState := momState
+    lastMomentumDir := momDirection
+    lastRsiSnapshot := rsiValue
+
+    // Divergence (Madde 23): reuses the SAME confirmed swings Structure just
+    // registered above in this same bar — a new HH with LOWER RSI-at-swing
+    // than the previous HH is bearish divergence; a new LL with HIGHER
+    // RSI-at-swing is bullish divergence. Reported as DETECTED only, never a
+    // guaranteed reversal.
+    if not na(pivotHighPrice) and not na(prevSwingHighRSI) and not na(prevSwingHighPrice) and
+         lastSwingHighPrice > prevSwingHighPrice and lastSwingHighRSI < prevSwingHighRSI
+        lastDivergence := DivergenceType.BEARISH
+        lastDivergenceBar := bar_index
+    if not na(pivotLowPrice) and not na(prevSwingLowRSI) and not na(prevSwingLowPrice) and
+         lastSwingLowPrice < prevSwingLowPrice and lastSwingLowRSI > prevSwingLowRSI
+        lastDivergence := DivergenceType.BULLISH
+        lastDivergenceBar := bar_index
+
+divergenceAgeText = na(lastDivergenceBar) ? "" : " (" + str.tostring(bar_index - lastDivergenceBar) + " bars ago)"
+divergenceText = f_divergenceLabel(lastDivergence) + (lastDivergence == DivergenceType.NONE ? "" : divergenceAgeText)
+momentumText = f_momStateLabel(lastMomentumState) + (lastMomentumDir == MomentumDirection.NONE ? "" : " " + f_momDirLabel(lastMomentumDir)) +
+     "  RSI " + (na(lastRsiSnapshot) ? "N/A" : str.tostring(lastRsiSnapshot, "#.#"))
+
+// -----------------------------------------------------------------------------
+// PARTICIPATION ENGINE (Madde 24) — RVOL + OBV alignment only, not every
+// volume-flavored indicator at once (Madde 6). VWAP is a FIXED N-bar rolling
+// average, NOT session-anchored (Madde 24: BTC is 24/7, no session-open
+// concept assumed, consistent with Madde 1/107).
+// -----------------------------------------------------------------------------
+volAvg = ta.sma(volume, i_rvolLookback)
+rvol = volumeValid and not na(volAvg) and volAvg > 0 ? volume / volAvg : na
+rvolExpanding   = not na(rvol) and rvol >= i_expansionRvolMult
+rvolContracting = not na(rvol) and rvol <= i_contractionRvolMult
+
+// OBV built manually from ta.cum/ta.change/math.sign — Pine's ta.* namespace
+// has no bare ta.obv series to call, unlike ta.tr (Madde 127: verify, don't
+// assume). Standard OBV definition: cumulative sum of volume signed by the
+// direction of each bar's close-to-close change.
+obvValue   = ta.cum(volume * math.sign(ta.change(close)))
+obvRising  = obvValue > obvValue[i_obvSlopeLookback]
+obvFalling = obvValue < obvValue[i_obvSlopeLookback]
+
+barBullish = close > open
+barBearish = close < open
+
+alignedBullish = barBullish and obvRising
+alignedBearish = barBearish and obvFalling
+misaligned     = (barBullish and obvFalling) or (barBearish and obvRising)
+
+partDirection = alignedBullish ? ParticipationDirection.BULLISH : alignedBearish ? ParticipationDirection.BEARISH : ParticipationDirection.NONE
+
+partState = rvolExpanding and (alignedBullish or alignedBearish) ? ParticipationState.CONFIRMING :
+     rvolExpanding and misaligned ? ParticipationState.DIVERGING :
+     rvolContracting ? ParticipationState.CONTRACTING :
+     rvolExpanding ? ParticipationState.EXPANDING :
+     ParticipationState.NORMAL
+
+rollingVwapNum = ta.sma(close * volume, i_vwapLookback)
+rollingVwapDen = ta.sma(volume, i_vwapLookback)
+rollingVwap = volumeValid and not na(rollingVwapDen) and rollingVwapDen > 0 ? rollingVwapNum / rollingVwapDen : na
+priceAboveVwap = not na(rollingVwap) and close > rollingVwap
+
+var ParticipationState     lastParticipationState = ParticipationState.NORMAL
+var ParticipationDirection lastParticipationDir   = ParticipationDirection.NONE
+var float                  lastRvol               = na
+var float                  lastVwap               = na
+var bool                   lastPriceAboveVwap      = bool(na)
+
+if barstate.isconfirmed
+    lastParticipationState := partState
+    lastParticipationDir := partDirection
+    lastRvol := rvol
+    lastVwap := rollingVwap
+    lastPriceAboveVwap := priceAboveVwap
+
+participationText = f_partStateLabel(lastParticipationState) + (lastParticipationDir == ParticipationDirection.NONE ? "" : " " + f_partDirLabel(lastParticipationDir)) +
+     "  RVOL " + (na(lastRvol) ? "N/A" : str.tostring(lastRvol, "#.##"))
+vwapText = na(lastVwap) ? "N/A" : str.tostring(lastVwap) + (lastPriceAboveVwap ? " (price above)" : " (price below)")
+
+// -----------------------------------------------------------------------------
+// MTF REFINEMENT (Madde 28-32) — first item of Phase E. Exactly ONE HTF,
+// exactly ONE request.security() call (1/40 budget). HTF resolution is built
+// entirely from `input.*` values and `timeframe.in_seconds(timeframe.period)`
+// (all "simple", never "series" qualified), so the resulting timeframe string
+// stays valid as request.security()'s (simple-string-only) second argument
+// even though it depends on a ternary chain.
+// -----------------------------------------------------------------------------
+chartTfSeconds = timeframe.in_seconds(timeframe.period)
+manualTfSeconds = timeframe.in_seconds(i_mtfManualTf)
+
+// "One level up" from Madde 28's default role table, collapsed to a single
+// HTF (the full 1D/4H/1H/15m cascade is deferred, see header note). Falls
+// back to the chart's own timeframe.period when no higher default role
+// exists — a always-valid, non-empty string to hand to request.security();
+// mtfAvailable (below) is what actually gates whether this is trusted/shown,
+// so no fabricated data reaches the diagnostics table (Madde 139/140).
+autoHtf = chartTfSeconds <= 900 ? "60" : chartTfSeconds <= 3600 ? "240" : chartTfSeconds <= 14400 ? "1D" : timeframe.period
+autoHtfAvailable = chartTfSeconds <= 14400
+
+mtfResolvedTf = i_mtfMode == "MANUAL" ? i_mtfManualTf : autoHtf
+mtfAvailable = chartTypeOK and (i_mtfMode == "MANUAL" ? manualTfSeconds > chartTfSeconds : autoHtfAvailable)
+
+// Non-repainting HTF access (Madde 29): every value in the tuple is offset by
+// `[1]` (the slope reference by `[i_mtfSlopeLookback + 1]`) AND the call uses
+// `lookahead = barmerge.lookahead_on` together — the official TradingView
+// non-repainting pattern. Bare `lookahead_on` without an offset expression is
+// forbidden by Madde 29 and is never used. One HTF bar of lag is accepted on
+// purpose (Madde 29: no future leak for an earlier signal).
+[htfClose, htfEma, htfEmaSlopeRef] = request.security(syminfo.tickerid, mtfResolvedTf,
+     [close[1], ta.ema(close, i_mtfEmaLen)[1], ta.ema(close, i_mtfEmaLen)[i_mtfSlopeLookback + 1]],
+     lookahead = barmerge.lookahead_on)
+
+htfBiasRaw = htfClose > htfEma and htfEma > htfEmaSlopeRef ? StructureBias.BULLISH :
+     htfClose < htfEma and htfEma < htfEmaSlopeRef ? StructureBias.BEARISH :
+     StructureBias.NEUTRAL
+
+mtfAgreement = not mtfAvailable ? MtfAgreement.UNAVAILABLE :
+     htfBiasRaw == StructureBias.NEUTRAL or structureBias == StructureBias.NEUTRAL ? MtfAgreement.NEUTRAL :
+     htfBiasRaw == structureBias ? MtfAgreement.AGREE :
+     MtfAgreement.CONFLICT
+
+mtfHtfText = mtfAvailable ? mtfResolvedTf + (i_mtfMode == "MANUAL" ? " (manual)" : " (auto)") :
+     "N/A" + (i_mtfMode == "MANUAL" ? " (manual HTF <= chart TF)" : " (chart already >= 1D)")
+mtfBiasText = mtfAvailable ? f_biasLabel(htfBiasRaw) + " vs chart " + f_biasLabel(structureBias) : "N/A"
+
+// -----------------------------------------------------------------------------
+// RISK ENGINE (Madde 44-49) — first item of Phase F. DIAGNOSTIC ONLY: no
+// Setup Classifier exists yet, so this is not wired to any actual entry. It
+// reuses the SAME nearestResIdx/nearestSupIdx the Zone module already
+// computed (Madde 111 — no new zone search) as the structural stop/target
+// reference; falls back to the last confirmed swing when no zone exists yet,
+// and to a genuine "NO STRUCTURAL STOP" (never a fabricated number, Madde
+// 139/140) when neither is available.
+// -----------------------------------------------------------------------------
+riskEntry = close
+
+// array.get() must NEVER be called with an out-of-range index (-1 = "no
+// zone yet"). Pine's ternary evaluates BOTH branches eagerly (same lesson
+// as the v0.4.1 RE10045 fix — see header), so `idx >= 0 ? array.get(...) :
+// fallback` would still call array.get() on -1 and crash. Explicit if/else
+// statements are used instead so the invalid branch is never evaluated.
+
+// LONG idea: invalidated below the nearest SUPPORT, targets the nearest
+// RESISTANCE (its near edge, not a blind "entry + 2 ATR", Madde 46).
+float longStopRaw = na
+float longTargetRaw = na
+if nearestSupIdx >= 0
+    longStopRaw := array.get(supportZones, nearestSupIdx).zoneLow
+else
+    longStopRaw := lastSwingLowPrice
+if nearestResIdx >= 0
+    longTargetRaw := array.get(resistanceZones, nearestResIdx).zoneLow
+
+// SHORT idea: invalidated above the nearest RESISTANCE, targets the nearest
+// SUPPORT (its near edge). Same f_riskCalc function, just isLong=false
+// (Madde 50 — no asymmetric long/short logic).
+float shortStopRaw = na
+float shortTargetRaw = na
+if nearestResIdx >= 0
+    shortStopRaw := array.get(resistanceZones, nearestResIdx).zoneHigh
+else
+    shortStopRaw := lastSwingHighPrice
+if nearestSupIdx >= 0
+    shortTargetRaw := array.get(supportZones, nearestSupIdx).zoneHigh
+
+[longStopLevel, longTargetLevel, longStopDist, longRewardDist, longRR, longStatus] =
+     f_riskCalc(true, riskEntry, longStopRaw, longTargetRaw, atrValue, i_riskAtrBufferMult, i_maxStopDistancePct, i_minRR)
+[shortStopLevel, shortTargetLevel, shortStopDist, shortRewardDist, shortRR, shortStatus] =
+     f_riskCalc(false, riskEntry, shortStopRaw, shortTargetRaw, atrValue, i_riskAtrBufferMult, i_maxStopDistancePct, i_minRR)
+
+[longRiskAmount, longPosSize, longNotional, longMargin] = f_positionSize(i_accountEquity, i_riskPctPerTrade, longStopDist, riskEntry, i_leverage)
+[shortRiskAmount, shortPosSize, shortNotional, shortMargin] = f_positionSize(i_accountEquity, i_riskPctPerTrade, shortStopDist, riskEntry, i_leverage)
+
+riskLongText  = f_riskLine(longStopLevel, longTargetLevel, longRR, longStatus)
+riskShortText = f_riskLine(shortStopLevel, shortTargetLevel, shortRR, shortStatus)
+
+posSizeLongText  = f_posSizeLine(longPosSize, longNotional, longMargin)
+posSizeShortText = f_posSizeLine(shortPosSize, shortNotional, shortMargin)
+
+// -----------------------------------------------------------------------------
+// SETUP CLASSIFIER (Madde 18-19) — "setup-specific decision rules", Phase F.
+// BREAKOUT_RETEST reuses the Breakout FSM (Madde 20-21) as its entire
+// trigger/confirmation/invalidation/expiry machinery — no new state machine
+// invented (Madde 111). Eligibility (Madde 19) is computed by
+// f_breakoutRetestEligible above, purely from breakoutDir vs primaryRegime.
+// -----------------------------------------------------------------------------
+setupEligible = f_breakoutRetestEligible(breakoutDir, primaryRegime)
+
+setupEligibilityText = breakoutDir == BreakoutDirection.NONE ? "N/A (no breakout attempt)" :
+     setupEligible ? "ELIGIBLE (" + f_regimeLabel(primaryRegime) + ")" :
+     "NOT ELIGIBLE (" + f_breakoutDirLabel(breakoutDir) + " vs " + f_regimeLabel(primaryRegime) + ", Madde 19)"
+
+// FAILED_BREAKOUT_REVERSAL (Madde 18) — pure reinterpretation of the
+// Breakout FSM's own REVERSAL_CANDIDATE state (see the REMAINING SETUP
+// ARCHETYPES header comment near f_failedReversalEligible). Reversal
+// direction = opposite of the failed breakout's own direction.
+failedReversalDir = breakoutDir == BreakoutDirection.UP ? BreakoutDirection.DOWN :
+     breakoutDir == BreakoutDirection.DOWN ? BreakoutDirection.UP : BreakoutDirection.NONE
+failedReversalEligible = breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE and
+     f_failedReversalEligible(breakoutDir, primaryRegime)
+
+// PULLBACK_CONTINUATION (Madde 18) — a pullback INTO a zone in the direction
+// of an established trend, followed by a reversal-style trigger resuming
+// that trend. Eligibility is re-checked LIVE every bar (pullbackDir vs
+// current structureBias/primaryRegime), same as setupEligible above, so a
+// regime flip mid-flight correctly de-eligibilizes it instead of freezing a
+// stale eligibility.
+var ReactionFSMState pullbackState = ReactionFSMState.IDLE
+var BreakoutDirection pullbackDir  = BreakoutDirection.NONE
+var int pullbackPendingBars = 0
+
+pullbackWantLong  = structureBias == StructureBias.BULLISH and primaryRegime == RegimeType.BULL_TREND
+pullbackWantShort = structureBias == StructureBias.BEARISH and primaryRegime == RegimeType.BEAR_TREND
+pullbackTouch = pullbackWantLong ? f_zoneTouch(supportZones, nearestSupIdx, high, low) :
+     pullbackWantShort ? f_zoneTouch(resistanceZones, nearestResIdx, high, low) : false
+pullbackTrigger = pullbackDir == BreakoutDirection.UP ?
+     (paBullEngulf or paHammerShape or paLowerRejection or paStrongCloseUp) and momDirection != MomentumDirection.BEARISH :
+     pullbackDir == BreakoutDirection.DOWN ?
+     (paBearEngulf or paStarShape or paUpperRejection or paStrongCloseDown) and momDirection != MomentumDirection.BULLISH :
+     false
+pullbackInvalidated = pullbackDir == BreakoutDirection.UP ? f_zoneBrokenBelow(supportZones, nearestSupIdx, close) :
+     pullbackDir == BreakoutDirection.DOWN ? f_zoneBrokenAbove(resistanceZones, nearestResIdx, close) : false
+
+if barstate.isconfirmed
+    pullbackPendingBars := pullbackState == ReactionFSMState.PENDING ? pullbackPendingBars + 1 : 0
+    pullbackTimedOut = pullbackPendingBars > i_reactionPendingMaxBars
+    pullbackTouchNow = pullbackTouch and (pullbackWantLong or pullbackWantShort)
+    if f_isIdleReactionState(pullbackState) and pullbackTouchNow
+        pullbackDir := pullbackWantLong ? BreakoutDirection.UP : BreakoutDirection.DOWN
+    pullbackState := f_reactionFSMStep(pullbackState, pullbackTouchNow, pullbackTrigger, pullbackInvalidated, pullbackTimedOut)
+
+pullbackActiveEligible = (pullbackState == ReactionFSMState.PENDING or pullbackState == ReactionFSMState.CONFIRMED) and
+     (pullbackDir == BreakoutDirection.UP ? pullbackWantLong : pullbackDir == BreakoutDirection.DOWN ? pullbackWantShort : false)
+
+// RANGE_REJECTION (Madde 18) — same reaction mechanism as Pullback
+// Continuation (Madde 111 — one mechanism, not near-duplicates), but gated
+// to RANGE regime only (Madde 19's own worked example) and open to EITHER
+// direction (a range has two edges, unlike a trend pullback).
+var ReactionFSMState rangeRejState = ReactionFSMState.IDLE
+var BreakoutDirection rangeRejDir  = BreakoutDirection.NONE
+var int rangeRejPendingBars = 0
+
+rangeRejRegimeOK  = primaryRegime == RegimeType.RANGE
+rangeRejTouchLong  = rangeRejRegimeOK and f_zoneTouch(supportZones, nearestSupIdx, high, low)
+rangeRejTouchShort = rangeRejRegimeOK and f_zoneTouch(resistanceZones, nearestResIdx, high, low)
+rangeRejTrigger = rangeRejDir == BreakoutDirection.UP ? (paBullEngulf or paHammerShape or paLowerRejection) :
+     rangeRejDir == BreakoutDirection.DOWN ? (paBearEngulf or paStarShape or paUpperRejection) :
+     false
+rangeRejInvalidated = rangeRejDir == BreakoutDirection.UP ? f_zoneBrokenBelow(supportZones, nearestSupIdx, close) :
+     rangeRejDir == BreakoutDirection.DOWN ? f_zoneBrokenAbove(resistanceZones, nearestResIdx, close) : false
+
+if barstate.isconfirmed
+    rangeRejPendingBars := rangeRejState == ReactionFSMState.PENDING ? rangeRejPendingBars + 1 : 0
+    rangeRejTimedOut = rangeRejPendingBars > i_reactionPendingMaxBars
+    rangeRejTouchNow = rangeRejTouchLong or rangeRejTouchShort
+    if f_isIdleReactionState(rangeRejState) and rangeRejTouchNow
+        rangeRejDir := rangeRejTouchLong ? BreakoutDirection.UP : BreakoutDirection.DOWN
+    rangeRejState := f_reactionFSMStep(rangeRejState, rangeRejTouchNow, rangeRejTrigger, rangeRejInvalidated, rangeRejTimedOut)
+
+rangeRejActiveEligible = (rangeRejState == ReactionFSMState.PENDING or rangeRejState == ReactionFSMState.CONFIRMED) and rangeRejRegimeOK
+
+// MEAN_REVERSION (Madde 18) — RSI-extreme based rather than zone-based
+// (genuine differentiation from Range Rejection, not a duplicate): "touch"
+// is RSI oversold/overbought (already-computed booleans, Momentum module,
+// Madde 111), "trigger" adds RSI turning back plus a reversal Price Action
+// pattern, "invalidated" is a new swing extreme in the adverse direction
+// (reusing the central swing function's own last-swing prices, Madde 14).
+var ReactionFSMState meanRevState = ReactionFSMState.IDLE
+var BreakoutDirection meanRevDir  = BreakoutDirection.NONE
+var int meanRevPendingBars = 0
+
+meanRevRegimeOK  = primaryRegime == RegimeType.RANGE or primaryRegime == RegimeType.TRANSITION
+meanRevTouchLong  = meanRevRegimeOK and rsiOversoldNow
+meanRevTouchShort = meanRevRegimeOK and rsiOverboughtNow
+meanRevTrigger = meanRevDir == BreakoutDirection.UP ? (rsiRising and (paBullEngulf or paHammerShape or paLowerRejection)) :
+     meanRevDir == BreakoutDirection.DOWN ? (rsiFalling and (paBearEngulf or paStarShape or paUpperRejection)) :
+     false
+meanRevInvalidated = meanRevDir == BreakoutDirection.UP ? (not na(lastSwingLowPrice) and close < lastSwingLowPrice) :
+     meanRevDir == BreakoutDirection.DOWN ? (not na(lastSwingHighPrice) and close > lastSwingHighPrice) : false
+
+if barstate.isconfirmed
+    meanRevPendingBars := meanRevState == ReactionFSMState.PENDING ? meanRevPendingBars + 1 : 0
+    meanRevTimedOut = meanRevPendingBars > i_reactionPendingMaxBars
+    meanRevTouchNow = meanRevTouchLong or meanRevTouchShort
+    if f_isIdleReactionState(meanRevState) and meanRevTouchNow
+        meanRevDir := meanRevTouchLong ? BreakoutDirection.UP : BreakoutDirection.DOWN
+    meanRevState := f_reactionFSMStep(meanRevState, meanRevTouchNow, meanRevTrigger, meanRevInvalidated, meanRevTimedOut)
+
+meanRevActiveEligible = (meanRevState == ReactionFSMState.PENDING or meanRevState == ReactionFSMState.CONFIRMED) and meanRevRegimeOK
+
+// PRIORITY RESOLUTION — exactly ONE archetype drives the state machine at a
+// time (Madde 51 v3.1.1 EK single-state invariant, satisfied by
+// construction). Order: BREAKOUT_RETEST > FAILED_BREAKOUT_REVERSAL >
+// PULLBACK_CONTINUATION > RANGE_REJECTION > MEAN_REVERSION —
+// trend/breakout-oriented setups take priority over range/reversion ones,
+// matching this project's OWN backtest research (README, Adım 3: Donchian
+// trend-following demonstrably more robust than mean-reversion for BTC).
+// Regime-gating already keeps these mostly mutually exclusive in practice;
+// this order only matters for the rarer TRANSITION-regime overlap.
+SetupType setupType = SetupType.NONE
+SetupStage setupStage = SetupStage.IDLE
+BreakoutDirection setupDir = BreakoutDirection.NONE
+bool setupPromotable = false
+
+if setupEligible and f_isActiveSetupState(breakoutState)
+    setupType := SetupType.BREAKOUT_RETEST
+    setupDir := breakoutDir
+    setupStage := breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE ? SetupStage.FORMING :
+         breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT ? SetupStage.CONFIRMED :
+         SetupStage.READY
+    setupPromotable := breakoutState == BreakoutFSMState.ENTRY
+else if failedReversalEligible
+    setupType := SetupType.FAILED_BREAKOUT_REVERSAL
+    setupDir := failedReversalDir
+    setupStage := SetupStage.READY
+    setupPromotable := true
+else if pullbackActiveEligible
+    setupType := SetupType.PULLBACK_CONTINUATION
+    setupDir := pullbackDir
+    setupStage := pullbackState == ReactionFSMState.PENDING ? SetupStage.FORMING : SetupStage.READY
+    setupPromotable := pullbackState == ReactionFSMState.CONFIRMED
+else if rangeRejActiveEligible
+    setupType := SetupType.RANGE_REJECTION
+    setupDir := rangeRejDir
+    setupStage := rangeRejState == ReactionFSMState.PENDING ? SetupStage.FORMING : SetupStage.READY
+    setupPromotable := rangeRejState == ReactionFSMState.CONFIRMED
+else if meanRevActiveEligible
+    setupType := SetupType.MEAN_REVERSION
+    setupDir := meanRevDir
+    setupStage := meanRevState == ReactionFSMState.PENDING ? SetupStage.FORMING : SetupStage.READY
+    setupPromotable := meanRevState == ReactionFSMState.CONFIRMED
+
+// SIGNAL QUALITY GATE (Madde 37 v3.1 EK) — "REGIME ACCEPTABLE" is regime-TYPE
+// compatibility (already inside each archetype's own eligibility check
+// above) PLUS regimeConfidence >= MEDIUM. If confidence is LOW, the spec is
+// explicit: "en fazla WATCH" (at most WATCH) — never SETUP/ENTRY_PENDING/
+// CONFIRMED, regardless of how far the underlying FSM itself has
+// progressed. This is a real, EXPLICITLY specified threshold (MEDIUM, the
+// existing ConfidenceLevel enum) — not a guessed number, so it is
+// implemented as a hard clamp. Contrast with Madde 38 (Minimum Independent
+// Evidence) just below setupRiskText, which the spec itself says must NOT
+// be guessed — that one is deliberately NOT gated yet.
+regimeAcceptable = regimeConfidence != ConfidenceLevel.LOW
+if setupType != SetupType.NONE and not regimeAcceptable
+    setupStage := SetupStage.FORMING
+    setupPromotable := false
+
+setupText = setupType != SetupType.NONE ?
+     f_setupTypeLabel(setupType) + " " + f_breakoutDirLabel(setupDir) + "  [ELIGIBLE]" :
+     (f_isActiveSetupState(breakoutState) and not setupEligible) ?
+     "BREAKOUT ATTEMPT (" + f_breakoutDirLabel(breakoutDir) + ")  [" + setupEligibilityText + "]" :
+     "NONE"
+
+// Other archetypes' raw FSM state, even when NOT the one currently winning
+// priority resolution — otherwise a forming Pullback/Range/Mean-Reversion
+// setup would be entirely invisible whenever Breakout Retest happens to be
+// active at the same time (Madde 139/140 — no silent behavior).
+otherSetupsText = "PB:" + f_reactionLabel(pullbackState) + (pullbackDir == BreakoutDirection.NONE ? "" : "(" + f_breakoutDirLabel(pullbackDir) + ")") +
+     "  RR:" + f_reactionLabel(rangeRejState) + (rangeRejDir == BreakoutDirection.NONE ? "" : "(" + f_breakoutDirLabel(rangeRejDir) + ")") +
+     "  MR:" + f_reactionLabel(meanRevState) + (meanRevDir == BreakoutDirection.NONE ? "" : "(" + f_breakoutDirLabel(meanRevDir) + ")")
+
+// Whichever Risk Engine side actually corresponds to this live setup's
+// direction (Madde 111 — reuse the already-computed LONG/SHORT numbers,
+// don't recompute a third time).
+setupRiskText = setupType == SetupType.NONE ? "N/A" :
+     setupDir == BreakoutDirection.UP ? riskLongText : riskShortText
+
+// -----------------------------------------------------------------------------
+// VETO ENGINE (Madde 52-53) — Phase F, the piece that finally lets the chain
+// (Regime -> Structure -> Zone -> Breakout FSM -> Setup Classifier -> Risk
+// Engine) reach a real CONFIRMED_LONG/CONFIRMED_SHORT. Runs INDEPENDENTLY
+// of score (Madde 52 — no scoring engine exists anyway, so this is
+// trivially satisfied). Only the HARD VETO / SOFT PENALTY categories this
+// script has actual evidence for are implemented (Madde 139/140 — no
+// fabricated checks for EXECUTION INVALID, LEVERAGE CASCADE RISK, ACCOUNT
+// CIRCUIT BREAKER, position/exposure violation, etc., none of which exist
+// yet), evaluated in Madde 53's PRECEDENCE order:
+//   RISK INVALID      = the live setup's Risk Engine status != OK (Madde
+//                        111 — reuses f_riskCalc's status, already covers
+//                        Madde 52's "poor R:R", stop/target problems,
+//                        "entry too close"/already-invalidated cases).
+//   STRUCTURE INVALID = severe MTF conflict (mtfAgreement == CONFLICT,
+//                        Madde 52's explicit "severe MTF conflict" item).
+//   SETUP INVALID     = Setup Classifier says not eligible, or the
+//                        Breakout FSM already failed/is idle (Madde 19,
+//                        Madde 52's "failed setup").
+// A separate, EXPLICIT gate (not part of the precedence list above, applied
+// earlier in the Setup Classifier section — see regimeAcceptable):
+// REGIME CONFIDENCE < MEDIUM caps the state at WATCH per Madde 37 v3.1 EK
+// ("REGIME ACCEPTABLE" = regime-type compatibility, already covered by each
+// archetype's own eligibility, PLUS confidence >= MEDIUM). Also surfaced
+// here as a hard-veto reason for visibility, since it has the same
+// practical effect (no CONFIRMED this bar).
+// SOFT PENALTIES (Madde 52) are informational only, never block CONFIRMED:
+// weak participation, weak momentum, MTF NEUTRAL (as opposed to the hard
+// CONFLICT), elevated volatility. Low regime confidence is now a HARD gate
+// (Madde 37 v3.1 EK, see below), not a soft penalty.
+//
+// Per explicit user instruction: no NEW magic-number threshold is
+// hardcoded here — R:R is already i_minRR (Risk Engine's own input), and
+// the one new threshold this module introduces (the ENTRY_PENDING
+// veto-blocked timeout, Madde 55 v3.1.1 EK) is i_entryPendingMaxBars
+// below. A hard-vetoed setup is NEVER silently hidden: it stays visible at
+// its current WATCH/SETUP/ENTRY_PENDING state with the reason shown in the
+// VETO diagnostics row, only falling back to FLAT if fully expired.
+// -----------------------------------------------------------------------------
+liveRiskStatus = setupDir == BreakoutDirection.UP ? longStatus : shortStatus
+riskInvalid = setupType != SetupType.NONE and liveRiskStatus != "OK"
+structureInvalid = setupType != SetupType.NONE and mtfAgreement == MtfAgreement.CONFLICT
+setupInvalid = setupType == SetupType.NONE
+
+hardVetoReasons = array.new<string>()
+if riskInvalid
+    array.push(hardVetoReasons, "RISK INVALID (" + liveRiskStatus + ")")
+if structureInvalid
+    array.push(hardVetoReasons, "STRUCTURE INVALID (severe MTF conflict)")
+if setupInvalid
+    array.push(hardVetoReasons, "SETUP INVALID (no active/eligible setup, Madde 18-19)")
+if setupType != SetupType.NONE and not regimeAcceptable
+    array.push(hardVetoReasons, "REGIME CONFIDENCE LOW (Madde 37 v3.1 EK — capped at WATCH)")
+hardVetoActive = array.size(hardVetoReasons) > 0
+
+softPenalties = array.new<string>()
+if lastParticipationState == ParticipationState.CONTRACTING
+    array.push(softPenalties, "weak participation")
+if lastMomentumState == MomentumState.WEAKENING or lastMomentumState == MomentumState.NEUTRAL
+    array.push(softPenalties, "weak momentum")
+if mtfAgreement == MtfAgreement.NEUTRAL
+    array.push(softPenalties, "MTF unclear")
+// Low regime confidence is now a HARD gate above (Madde 37 v3.1 EK,
+// "REGIME ACCEPTABLE" = type compatibility + confidence >= MEDIUM), not a
+// soft penalty — listing it here too would just duplicate the same reason
+// under both HARD and SOFT (Madde 6 double-counting spirit, applied to
+// the diagnostics themselves).
+if volRegime == VolRegime.HIGH_VOL or volRegime == VolRegime.EXTREME_VOL
+    array.push(softPenalties, "elevated volatility")
+
+softPenaltyText = array.size(softPenalties) > 0 ? array.join(softPenalties, ", ") : "none"
+hardVetoText = array.size(hardVetoReasons) > 0 ? array.join(hardVetoReasons, "; ") : "none"
+// Full text collapses to a plain "N/A" while nothing is even attempting a
+// setup — showing "HARD VETO: SETUP INVALID" through every idle FLAT bar
+// would be technically true but pure noise (Madde 10).
+vetoText = setupType == SetupType.NONE ? "N/A (no active setup)" :
+     hardVetoActive ? "HARD VETO: " + hardVetoText + (array.size(softPenalties) > 0 ? "  [soft: " + softPenaltyText + "]" : "") :
+     array.size(softPenalties) > 0 ? "no hard veto  [soft: " + softPenaltyText + "]" :
+     "CLEAN"
+
+// -----------------------------------------------------------------------------
+// STATE MACHINE — WATCH/SETUP/ENTRY_PENDING/CONFIRMED_LONG/CONFIRMED_SHORT
+// (Madde 18-19, 52-53, 55). Second confirmed-bar block (the first, above,
+// only owns the DATA_INVALID gate — see its comment) since it needs
+// setupType/setupStage/setupPromotable/hardVetoActive, all computed later
+// in the script than that block. Drives ONLY off the Setup Classifier's
+// generic setupStage/setupPromotable — genuinely archetype-agnostic, so
+// whichever of the five archetypes won priority resolution (BREAKOUT_RETEST
+// or one of the other four) is handled identically here (Madde 111). A
+// setup reaching its own "fully confirmed" moment (setupPromotable) becomes
+// a real CONFIRMED_LONG/CONFIRMED_SHORT only when the Veto Engine has NO
+// hard veto — this is the module where that transition first became
+// possible at all. If hard-vetoed, state stays at ENTRY_PENDING (never
+// silently hidden, see VETO row) until i_entryPendingMaxBars bars pass,
+// then reverts to FLAT (Madde 55 v3.1.1 EK's previously-open question:
+// WATCH or FLAT — FLAT chosen for consistency with how a failed/stale
+// setup already resolves, Madde 10 simplicity). The single currentState
+// variable can only ever hold ONE value, so CONFIRMED_LONG and
+// CONFIRMED_SHORT can structurally never coexist on the same bar (Madde 51
+// v3.1.1 EK invariant, satisfied by construction).
+// -----------------------------------------------------------------------------
+var int entryPendingBlockedBars = 0
+bool newlyConfirmed = false
+
+// Guard extended (Madde 56, Phase G): once a position is actually open
+// (IN_POSITION/EXIT/COOLDOWN), this setup-driven block must NOT keep
+// overwriting currentState from fresh structural signals — the position
+// lifecycle block below owns currentState exclusively until COOLDOWN
+// resolves back to FLAT, at which point this block resumes normally.
+if barstate.isconfirmed and currentState != EngineState.DATA_INVALID and
+     currentState != EngineState.IN_POSITION and currentState != EngineState.EXIT and currentState != EngineState.COOLDOWN
+    provisionalState = setupType == SetupType.NONE ? EngineState.FLAT :
+         setupStage == SetupStage.FORMING ? EngineState.WATCH :
+         setupStage == SetupStage.CONFIRMED ? EngineState.SETUP :
+         setupStage == SetupStage.READY ? EngineState.ENTRY_PENDING :
+         EngineState.FLAT
+
+    if provisionalState == EngineState.ENTRY_PENDING and setupPromotable and not hardVetoActive
+        wasAlreadyConfirmed = currentState == EngineState.CONFIRMED_LONG or currentState == EngineState.CONFIRMED_SHORT
+        currentState := setupDir == BreakoutDirection.UP ? EngineState.CONFIRMED_LONG : EngineState.CONFIRMED_SHORT
+        newlyConfirmed := not wasAlreadyConfirmed
+        entryPendingBlockedBars := 0
+    else if provisionalState == EngineState.ENTRY_PENDING and setupPromotable and hardVetoActive
+        entryPendingBlockedBars := entryPendingBlockedBars + 1
+        currentState := entryPendingBlockedBars > i_entryPendingMaxBars ? EngineState.FLAT : EngineState.ENTRY_PENDING
+    else
+        entryPendingBlockedBars := 0
+        currentState := provisionalState
+
+// -----------------------------------------------------------------------------
+// POSITION LIFECYCLE / EXIT ENGINE (Madde 56-58) — Phase G, part 1. Only
+// INITIAL STOP + TARGET are implemented as exits (Madde 57 also lists
+// structure invalidation, break-even, trailing, time stop, partial exit,
+// emergency exit — all explicitly deferred, see header). One stage advance
+// per confirmed bar (mutually exclusive if/else-if on currentState AS IT
+// STOOD entering this bar) — so CONFIRMED_LONG/SHORT (set just above, same
+// bar) immediately becomes IN_POSITION also within this same bar (the
+// chart label below uses posDirection, not currentState, for exactly this
+// reason — currentState has already moved on by the time it draws); EXIT
+// is then genuinely visible for one full bar before advancing to COOLDOWN
+// on the NEXT bar, and COOLDOWN counts down before returning to FLAT.
+// -----------------------------------------------------------------------------
+var float posEntryPrice  = na
+var float posStopLevel   = na
+var float posTargetLevel = na
+var BreakoutDirection posDirection = BreakoutDirection.NONE
+var int posEntryBar = na
+var string posExitReason = "N/A"
+var int cooldownBarsLeft = 0
+
+if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
+    if currentState == EngineState.CONFIRMED_LONG or currentState == EngineState.CONFIRMED_SHORT
+        if na(posEntryPrice)
+            posEntryPrice  := riskEntry
+            posDirection   := setupDir
+            posStopLevel   := setupDir == BreakoutDirection.UP ? longStopLevel : shortStopLevel
+            posTargetLevel := setupDir == BreakoutDirection.UP ? longTargetLevel : shortTargetLevel
+            posEntryBar    := bar_index
+            currentState   := EngineState.IN_POSITION
+    else if currentState == EngineState.IN_POSITION
+        // Madde 57: if a bar touches BOTH stop and target, OHLC alone can't
+        // tell us which happened first — never assume the optimistic
+        // outcome. stopHit is checked FIRST and takes precedence.
+        stopHit   = posDirection == BreakoutDirection.UP ? low <= posStopLevel : high >= posStopLevel
+        targetHit = posDirection == BreakoutDirection.UP ? high >= posTargetLevel : low <= posTargetLevel
+        if stopHit
+            posExitReason := "STOP HIT"
+            currentState  := EngineState.EXIT
+        else if targetHit
+            posExitReason := "TARGET HIT"
+            currentState  := EngineState.EXIT
+    else if currentState == EngineState.EXIT
+        cooldownBarsLeft := i_cooldownBars
+        currentState     := EngineState.COOLDOWN
+        posEntryPrice    := na
+        posStopLevel     := na
+        posTargetLevel   := na
+        posDirection     := BreakoutDirection.NONE
+    else if currentState == EngineState.COOLDOWN
+        cooldownBarsLeft := cooldownBarsLeft - 1
+        if cooldownBarsLeft <= 0
+            currentState := EngineState.FLAT
+
+positionText = currentState == EngineState.IN_POSITION ?
+     f_breakoutDirLabel(posDirection) + "  entry " + str.tostring(posEntryPrice) + "  stop " + str.tostring(posStopLevel) + "  target " + str.tostring(posTargetLevel) :
+     currentState == EngineState.EXIT ? "EXIT (" + posExitReason + ")" :
+     currentState == EngineState.COOLDOWN ? "COOLDOWN (" + str.tostring(math.max(cooldownBarsLeft, 0)) + " bars left, last: " + posExitReason + ")" :
+     "N/A"
+
+// -----------------------------------------------------------------------------
+// ALERT ENGINE (Madde 116-117) — Phase G, part 2. State-transition/event
+// based, never re-firing for the same state on consecutive bars (Madde
+// 116). Fires on the confirmed bar — but see the TIMING NOTE in this
+// turn's delivery message: per TradingView's own official docs (verified
+// this turn, Madde 127) and this spec's own EK-H, the actual alert()
+// notification is NOT delivered at the exact instant of confirmed bar
+// close — it is delivered on the next possible tick (server waits for the
+// first trade of the following bar to confirm no late trades, with a
+// documented ~1-minute worst-case fallback during illiquid periods). The
+// SCRIPT's own decision (which state to alert, computed from
+// barstate.isconfirmed data) is still fully non-repainting; only the
+// notification's real-world DELIVERY time lags slightly (Madde 136
+// backtest/live parity — the gap is real, not ignored).
+//
+// SCORE and CONFIDENCE appear in Madde 117's example alert format, but
+// NEITHER exists in this script — no scoring/aggregation engine (Madde 41)
+// and no composite Signal Confidence (Madde 39) have been built. Per
+// explicit user instruction: NOT fabricated. Shown as "N/A (not
+// implemented)" rather than silently dropped, so the field's absence is
+// visible and explained, not just missing (Madde 139/140).
+// -----------------------------------------------------------------------------
+alertLocationText = setupDir == BreakoutDirection.UP ? supZoneText : setupDir == BreakoutDirection.DOWN ? resZoneText : "N/A"
+alertRRText = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ?
+     (na(posEntryPrice) or na(posStopLevel) or posEntryPrice == posStopLevel ? "N/A" : str.tostring(math.abs(posTargetLevel - posEntryPrice) / math.abs(posEntryPrice - posStopLevel), "#.##")) :
+     setupDir == BreakoutDirection.UP ? (na(longRR) ? "N/A" : str.tostring(longRR, "#.##")) :
+     setupDir == BreakoutDirection.DOWN ? (na(shortRR) ? "N/A" : str.tostring(shortRR, "#.##")) :
+     "N/A"
+alertEntryText  = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ? (na(posEntryPrice) ? "N/A" : str.tostring(posEntryPrice)) : str.tostring(riskEntry)
+alertStopText   = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ? (na(posStopLevel) ? "N/A" : str.tostring(posStopLevel)) :
+     setupDir == BreakoutDirection.UP ? (na(longStopLevel) ? "N/A" : str.tostring(longStopLevel)) : setupDir == BreakoutDirection.DOWN ? (na(shortStopLevel) ? "N/A" : str.tostring(shortStopLevel)) : "N/A"
+alertTargetText = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ? (na(posTargetLevel) ? "N/A" : str.tostring(posTargetLevel)) :
+     setupDir == BreakoutDirection.UP ? (na(longTargetLevel) ? "N/A" : str.tostring(longTargetLevel)) : setupDir == BreakoutDirection.DOWN ? (na(shortTargetLevel) ? "N/A" : str.tostring(shortTargetLevel)) : "N/A"
+
+alertMessage = "BTC PRO ENGINE\n\n" +
+     "REGIME: " + f_regimeLabel(primaryRegime) + "\n" +
+     "STRUCTURE: " + f_biasLabel(structureBias) + "\n" +
+     "LOCATION: " + alertLocationText + "\n" +
+     "SETUP: " + f_setupTypeLabel(setupType) + (setupType == SetupType.NONE ? "" : " " + f_breakoutDirLabel(setupDir)) + "\n" +
+     "MOMENTUM: " + momentumText + "\n" +
+     "PARTICIPATION: " + participationText + "\n" +
+     "MTF: " + f_mtfAgreementLabel(mtfAgreement) + "\n" +
+     "VOLATILITY: " + f_volLabel(volRegime) + "\n\n" +
+     "ENTRY: " + alertEntryText + "\n" +
+     "STOP: " + alertStopText + "\n" +
+     "TARGET: " + alertTargetText + "\n" +
+     "R:R: " + alertRRText + "\n\n" +
+     "SCORE: N/A (not implemented)\n" +
+     "CONFIDENCE: N/A (not implemented)\n" +
+     "VETO: " + (hardVetoActive ? hardVetoText : "NONE")
+
+var EngineState lastAlertedState = EngineState.DATA_INVALID
+var bool lastAlertedHardVeto = false
+
+// WATCH ENTER / SETUP ENTER / EXIT / COOLDOWN: currentState genuinely
+// RESTS at these values across bars, so comparing against the last
+// alerted state correctly catches the transition and never repeats
+// (Madde 116). CONFIRMED_LONG/CONFIRMED_SHORT deliberately excluded here
+// and handled separately below via `newlyConfirmed` — currentState
+// advances to IN_POSITION within the SAME bar it becomes CONFIRMED (Phase
+// G part 1), so it would never actually be observed resting at
+// CONFIRMED_LONG/SHORT by this comparison (same lesson as the chart
+// label's posDirection fix).
+stateChangedForAlert = barstate.isconfirmed and currentState != lastAlertedState and currentState != EngineState.DATA_INVALID
+if i_enableAlerts and stateChangedForAlert and
+     (currentState == EngineState.WATCH or currentState == EngineState.SETUP or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN)
+    alertStateLabel = currentState == EngineState.WATCH ? "WATCH ENTER" :
+         currentState == EngineState.SETUP ? "SETUP ENTER" :
+         currentState == EngineState.EXIT ? "EXIT (" + posExitReason + ")" :
+         "COOLDOWN"
+    alert(alertStateLabel + "\n\n" + alertMessage, freq = alert.freq_once_per_bar_close)
+
+if i_enableAlerts and barstate.isconfirmed and newlyConfirmed
+    alert((posDirection == BreakoutDirection.UP ? "CONFIRMED LONG" : "CONFIRMED SHORT") + "\n\n" + alertMessage, freq = alert.freq_once_per_bar_close)
+
+if i_enableAlerts and barstate.isconfirmed and hardVetoActive and not lastAlertedHardVeto and setupType != SetupType.NONE
+    alert("HARD VETO\n\n" + alertMessage, freq = alert.freq_once_per_bar_close)
+
+if barstate.isconfirmed
+    lastAlertedState    := currentState
+    lastAlertedHardVeto := hardVetoActive
+
+// -----------------------------------------------------------------------------
+// DIAGNOSTICS (temporary — NOT the Madde 114 panel)
+// -----------------------------------------------------------------------------
+reasons = array.new<string>()
+if not instrumentOK
+    array.push(reasons, "INSTRUMENT MISMATCH")
+if not exchangeOK
+    array.push(reasons, "EXCHANGE WARNING")
+if not ohlcValid
+    array.push(reasons, "OHLC INVALID")
+if not volumeValid
+    array.push(reasons, "VOLUME NA")
+if not sufficientHistory
+    array.push(reasons, "INSUFFICIENT HISTORY")
+if not atrValid
+    array.push(reasons, "ATR UNAVAILABLE")
+if not chartTypeOK
+    array.push(reasons, "NON-TIME-BASED CHART (GAP CHECK DISABLED)")
+if dataGapDetected
+    array.push(reasons, "DATA GAP")
+if abnormalBar
+    array.push(reasons, "ABNORMAL BAR")
+if staleDataDetected
+    array.push(reasons, "STALE FEED")
+reasonsText = array.size(reasons) > 0 ? array.join(reasons, ", ") : "NONE"
+
+// PAGINATED DIAGNOSTICS (Madde 125 v0.15.1 fix) — ONE growing list of rows,
+// ONE small table, sliced by i_diagPage/i_diagRowsPerPage. f_addDiagRow is
+// the PERMANENT way any future module adds a diagnostics row: push a
+// label/value/color triple here, never write a new table.cell block or a
+// new table object. Arrays are mutated in place (Madde 111 — same pattern
+// as f_upsertZone/f_updateZones taking array<Zone>).
+f_addDiagRow(array<string> labels, array<string> values, array<color> colors, string label, string value, color col) =>
+    array.push(labels, label)
+    array.push(values, value)
+    array.push(colors, col)
+    true
+
+diagLabels = array.new<string>()
+diagValues = array.new<string>()
+diagColors = array.new<color>()
+
+f_addDiagRow(diagLabels, diagValues, diagColors, "STATE", f_stateLabel(currentState), f_stateColor(currentState))
+f_addDiagRow(diagLabels, diagValues, diagColors, "DATA GATE (live)", liveDataValid ? "VALID" : "INVALID", liveDataValid ? color.lime : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "SYMBOL", syminfo.tickerid, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "EXCHANGE", syminfo.prefix + (exchangeOK ? "" : " (expected " + i_expectedExchange + ")"), exchangeOK ? color.gray : color.orange)
+f_addDiagRow(diagLabels, diagValues, diagColors, "INSTRUMENT", syminfo.basecurrency + "/" + syminfo.currency, instrumentOK ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MARKET TYPE", marketTypeGuess, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "BARS", str.tostring(bar_index + 1) + " / " + str.tostring(i_minBars), sufficientHistory ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "OHLC / VOLUME", (ohlcValid ? "OK" : "INVALID") + " / " + (volumeValid ? "OK" : "NA"), (ohlcValid and volumeValid) ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "GAP / ABNORMAL / STALE",
+     (dataGapDetected or abnormalBar or staleDataDetected) ? ((dataGapDetected ? "GAP " : "") + (abnormalBar ? "ABN " : "") + (staleDataDetected ? "STALE" : "")) : "OK",
+     (dataGapDetected or abnormalBar or staleDataDetected) ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "ISSUES", reasonsText, array.size(reasons) > 0 ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "REGIME", f_regimeLabel(primaryRegime) + " (" + str.tostring(barsInRegime) + " bars)",
+     primaryRegime == RegimeType.BULL_TREND ? color.lime : primaryRegime == RegimeType.BEAR_TREND ? color.red : primaryRegime == RegimeType.RANGE ? color.yellow : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "REGIME CONFIDENCE", f_confLabel(regimeConfidence),
+     regimeConfidence == ConfidenceLevel.HIGH ? color.lime : regimeConfidence == ConfidenceLevel.MEDIUM ? color.yellow : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "TREND VOTES (bull/bear)", str.tostring(bullVotes) + "/4  " + str.tostring(bearVotes) + "/4", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "ADX(" + str.tostring(i_adxLen) + ")",
+     not na(adxValue) ? str.tostring(adxValue, "#.##") + (trendStrong ? " (strong)" : " (weak)") : "N/A", trendStrong ? color.gray : color.silver)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VOLATILITY", f_volLabel(volRegime) + (not na(atrPctRank) ? " (" + str.tostring(atrPctRank, "#") + "pct)" : ""),
+     volRegime == VolRegime.EXTREME_VOL ? color.red : volRegime == VolRegime.HIGH_VOL ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "STRUCTURE BIAS", f_biasLabel(structureBias),
+     structureBias == StructureBias.BULLISH ? color.lime : structureBias == StructureBias.BEARISH ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "LAST SWING HIGH", f_swingLabel(lastHighLabel) + " " + (na(lastSwingHighPrice) ? "N/A" : str.tostring(lastSwingHighPrice)) + " (" + swingHighAgeText + ")", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "LAST SWING LOW", f_swingLabel(lastLowLabel) + " " + (na(lastSwingLowPrice) ? "N/A" : str.tostring(lastSwingLowPrice)) + " (" + swingLowAgeText + ")", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "LAST EVENT", f_structEventLabel(lastStructureEvent) + lastEventAgeText,
+     lastStructureEvent == StructureEvent.BOS_UP or lastStructureEvent == StructureEvent.CHOCH_UP ? color.lime :
+      lastStructureEvent == StructureEvent.BOS_DOWN or lastStructureEvent == StructureEvent.CHOCH_DOWN ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "BREAKOUT STATE", breakoutStateText,
+     breakoutState == BreakoutFSMState.ENTRY ? color.lime : breakoutState == BreakoutFSMState.FAILED_BREAKOUT or breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "BREAKOUT LEVEL", breakoutLevelText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "ZONES (R/S)", str.tostring(array.size(resistanceZones)) + " / " + str.tostring(array.size(supportZones)), color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "NEAREST RESISTANCE", resZoneText, resZoneText == "NONE" ? color.gray : color.red)
+f_addDiagRow(diagLabels, diagValues, diagColors, "NEAREST SUPPORT", supZoneText, supZoneText == "NONE" ? color.gray : color.lime)
+f_addDiagRow(diagLabels, diagValues, diagColors, "FIB LEG", fibLegText, fibValid ? color.gray : color.silver)
+f_addDiagRow(diagLabels, diagValues, diagColors, "FIB TOUCH", fibTouchLabel, fibTouchLabel == "NONE" ? color.gray : color.yellow)
+f_addDiagRow(diagLabels, diagValues, diagColors, "PRICE ACTION", lastPriceActionPatterns, lastPriceActionPatterns == "NONE" ? color.gray : color.yellow)
+f_addDiagRow(diagLabels, diagValues, diagColors, "CANDLE METRICS", priceActionMetricsText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MOMENTUM", momentumText,
+     lastMomentumState == MomentumState.RECOVERING or lastMomentumState == MomentumState.ACCELERATING ? color.lime :
+      lastMomentumState == MomentumState.WEAKENING ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "DIVERGENCE", divergenceText, lastDivergence == DivergenceType.NONE ? color.gray : color.fuchsia)
+f_addDiagRow(diagLabels, diagValues, diagColors, "PARTICIPATION", participationText,
+     lastParticipationState == ParticipationState.CONFIRMING ? color.lime : lastParticipationState == ParticipationState.DIVERGING ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VWAP (rolling)", vwapText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MTF HTF", mtfHtfText, mtfAvailable ? color.gray : color.silver)
+f_addDiagRow(diagLabels, diagValues, diagColors, "MTF AGREEMENT", f_mtfAgreementLabel(mtfAgreement) + (mtfAvailable ? "  (" + mtfBiasText + ")" : ""),
+     mtfAgreement == MtfAgreement.AGREE ? color.lime : mtfAgreement == MtfAgreement.CONFLICT ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "RISK LONG", riskLongText, longStatus == "OK" ? color.lime : longStatus == "ALREADY INVALIDATED" ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "RISK SHORT", riskShortText, shortStatus == "OK" ? color.lime : shortStatus == "ALREADY INVALIDATED" ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "POSITION SIZE (LONG)", posSizeLongText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "POSITION SIZE (SHORT)", posSizeShortText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "SETUP CLASSIFIER", setupText, setupType != SetupType.NONE ? color.yellow : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "OTHER SETUPS", otherSetupsText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "SETUP RISK", setupRiskText, color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VETO (HARD)", hardVetoActive ? hardVetoText : (setupType == SetupType.NONE ? "N/A" : "none"), hardVetoActive ? color.red : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "VETO (SOFT)", array.size(softPenalties) > 0 ? softPenaltyText : (setupType == SetupType.NONE ? "N/A" : "none"), array.size(softPenalties) > 0 ? color.orange : color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "REQUEST BUDGET", "1 / 40 (MTF: 1 tuple request.security call)", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "POSITION", positionText,
+     currentState == EngineState.IN_POSITION ? color.yellow : currentState == EngineState.EXIT ? (posExitReason == "TARGET HIT" ? color.lime : color.red) : color.gray)
+
+// Slice: page 1 = rows 0..(N-1), page 2 = rows N..(2N-1), etc. Division by
+// i_diagRowsPerPage promotes to float in Pine, so math.ceil gives the true
+// page count; i_diagPage is clamped into [1, totalDiagPages] so an
+// out-of-range page (e.g. content shrinks after a settings change) falls
+// back to the last valid page instead of rendering nothing.
+totalDiagRows = array.size(diagLabels)
+// int()-wrapped throughout: math.ceil() returns float, and array.get()
+// further below requires an int index — mixing float back in here would
+// either fail to compile or (worse) silently coerce and risk an off-by-one
+// that hides rows, exactly the kind of thing Madde 139/140 warns against.
+totalDiagPages = math.max(1, int(math.ceil(float(totalDiagRows) / i_diagRowsPerPage)))
+currentDiagPage = math.min(i_diagPage, totalDiagPages)
+diagStartIdx = (currentDiagPage - 1) * i_diagRowsPerPage
+diagEndIdx = math.min(diagStartIdx + i_diagRowsPerPage - 1, totalDiagRows - 1)
+diagRowsShown = math.max(0, diagEndIdx - diagStartIdx + 1)
+
+// +1 row reserved for the header (ENGINE version + PAGE x/y) shown on
+// every page for orientation — never part of the paginated content itself.
+var table debugTable = table.new(position.top_right, 2, i_diagRowsPerPage + 1, border_width = 1)
+
+if i_showDebug and barstate.islast
+    table.cell(debugTable, 0, 0, "ENGINE", text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    table.cell(debugTable, 1, 0, ENGINE_VERSION + "  PAGE " + str.tostring(currentDiagPage) + "/" + str.tostring(totalDiagPages),
+         text_size = size.tiny, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    if diagRowsShown > 0
+        for i = 0 to diagRowsShown - 1
+            idx = diagStartIdx + i
+            table.cell(debugTable, 0, i + 1, array.get(diagLabels, idx), text_size = size.tiny, text_halign = text.align_left)
+            table.cell(debugTable, 1, i + 1, array.get(diagValues, idx), text_size = size.tiny, text_color = array.get(diagColors, idx), text_halign = text.align_left)
+
+// -----------------------------------------------------------------------------
+// VISUAL CONFIRMATION (minimal — no panel/alert module yet)
+// -----------------------------------------------------------------------------
+bgcolor(i_showBg and currentState == EngineState.DATA_INVALID ? color.new(color.red, 90) : na)
+
+plot(emaFast, "EMA Fast", color = color.new(color.teal, 30))
+plot(emaMid,  "EMA Mid",  color = color.new(color.orange, 30))
+plot(emaSlow, "EMA Slow", color = color.new(color.purple, 30))
+
+plotshape(i_showStructureMarks and not na(pivotHighPrice) ? pivotHighPrice : na, title = "Swing High",
+     style = shape.triangledown, location = location.absolute, offset = -i_pivotRight, color = color.red, size = size.tiny)
+plotshape(i_showStructureMarks and not na(pivotLowPrice) ? pivotLowPrice : na, title = "Swing Low",
+     style = shape.triangleup, location = location.absolute, offset = -i_pivotRight, color = color.lime, size = size.tiny)
+
+if i_showStructureMarks and barstate.isconfirmed and (bosUpEvent or chochUpEvent)
+    label.new(bar_index, high, bosUpEvent ? "BOS" : "CHoCH", style = label.style_label_down,
+         color = bosUpEvent ? color.new(color.lime, 0) : color.new(color.blue, 0), textcolor = color.white, size = size.tiny)
+if i_showStructureMarks and barstate.isconfirmed and (bosDownEvent or chochDownEvent)
+    label.new(bar_index, low, bosDownEvent ? "BOS" : "CHoCH", style = label.style_label_up,
+         color = bosDownEvent ? color.new(color.red, 0) : color.new(color.orange, 0), textcolor = color.white, size = size.tiny)
+
+// Breakout FSM: only shown while an attempt is active (na while idle, via
+// plot.style_linebr so the line breaks cleanly instead of dragging a stale
+// level across idle periods).
+plot(i_showBreakoutMarks and not f_isIdleBreakoutState(breakoutState) ? breakoutLevel : na, "Breakout Level",
+     color = color.new(color.fuchsia, 40), style = plot.style_linebr, linewidth = 1)
+
+if i_showBreakoutMarks and barstate.isconfirmed and breakoutStateBar == bar_index
+    breakoutMarkColor = breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT ? color.blue :
+         breakoutState == BreakoutFSMState.RETEST_PENDING ? color.orange :
+         breakoutState == BreakoutFSMState.ENTRY ? color.lime :
+         breakoutState == BreakoutFSMState.FAILED_BREAKOUT ? color.red :
+         breakoutState == BreakoutFSMState.REVERSAL_CANDIDATE ? color.maroon :
+         breakoutState == BreakoutFSMState.STALE ? color.gray :
+         color.silver
+    label.new(bar_index, breakoutDir == BreakoutDirection.UP ? high : low, f_breakoutStateLabel(breakoutState),
+         style = breakoutDir == BreakoutDirection.UP ? label.style_label_down : label.style_label_up,
+         color = color.new(breakoutMarkColor, 0), textcolor = color.white, size = size.tiny)
+
+// Veto Engine (Madde 52-53): a distinct, larger marker ONLY on the bar a
+// CONFIRMED_LONG/CONFIRMED_SHORT is first reached (newlyConfirmed, edge-
+// triggered — not redrawn every bar it persists), separate from the
+// Breakout FSM's own "ENTRY (structural only)" label above since this one
+// means the Veto Engine found no hard veto, a materially different claim.
+// v0.16.0 QA FIX caught before delivery (Madde 125): now that CONFIRMED_LONG/
+// SHORT immediately advances to IN_POSITION within the SAME bar (Phase G
+// position lifecycle, below), currentState no longer RESTS at CONFIRMED_LONG/
+// SHORT by the time this visual code runs later in the same bar's execution
+// — checking `currentState == EngineState.CONFIRMED_LONG` here would always
+// be false, silently mislabeling every LONG confirmation as SHORT. Use
+// posDirection instead, which is set in the same transition and persists
+// through to this point (only cleared on the EXIT->COOLDOWN transition, a
+// later bar).
+if i_showBreakoutMarks and barstate.isconfirmed and newlyConfirmed
+    label.new(bar_index, posDirection == BreakoutDirection.UP ? low : high,
+         "CONFIRMED " + (posDirection == BreakoutDirection.UP ? "LONG" : "SHORT"),
+         style = posDirection == BreakoutDirection.UP ? label.style_label_up : label.style_label_down,
+         color = color.new(posDirection == BreakoutDirection.UP ? color.lime : color.red, 0),
+         textcolor = color.white, size = size.small)
+
+// Position Lifecycle (Madde 56-58): stop/target lines while IN_POSITION
+// (na while idle, via plot.style_linebr so the line breaks cleanly rather
+// than dragging a stale level across idle periods — same pattern as the
+// Breakout Level plot above), and an EXIT marker on the bar the position
+// actually closes (currentState rests at EXIT for exactly one bar, see the
+// POSITION LIFECYCLE section's own comment).
+plot(i_showPositionMarks and currentState == EngineState.IN_POSITION ? posStopLevel : na, "Position Stop",
+     color = color.new(color.red, 20), style = plot.style_linebr, linewidth = 1)
+plot(i_showPositionMarks and currentState == EngineState.IN_POSITION ? posTargetLevel : na, "Position Target",
+     color = color.new(color.lime, 20), style = plot.style_linebr, linewidth = 1)
+
+if i_showPositionMarks and barstate.isconfirmed and currentState == EngineState.EXIT
+    label.new(bar_index, posDirection == BreakoutDirection.UP ? high : low, "EXIT: " + posExitReason,
+         style = posDirection == BreakoutDirection.UP ? label.style_label_down : label.style_label_up,
+         color = color.new(posExitReason == "TARGET HIT" ? color.lime : color.red, 0), textcolor = color.white, size = size.small)
+
+// Price Action (Madde 22): small dots on the confirmed bar, bullish patterns
+// below the bar, bearish above — diagnostic only, not a trigger/entry.
+plotshape(i_showPriceActionMarks and barstate.isconfirmed and (paBullEngulf or paHammerShape),
+     title = "Bullish Price Action", style = shape.circle, location = location.belowbar, color = color.lime, size = size.tiny)
+plotshape(i_showPriceActionMarks and barstate.isconfirmed and (paBearEngulf or paStarShape),
+     title = "Bearish Price Action", style = shape.circle, location = location.abovebar, color = color.red, size = size.tiny)
+
+// Momentum divergence (Madde 23): label at the swing bar itself (using the
+// central swing function's own SWING_TIME), not the current bar — "DIVERGENCE
+// DETECTED" only, never presented as a guaranteed reversal.
+if i_showMomentumMarks and barstate.isconfirmed and lastDivergenceBar == bar_index
+    if lastDivergence == DivergenceType.BEARISH
+        label.new(lastSwingHighSwingBar, lastSwingHighPrice, "DIV", style = label.style_label_down,
+             color = color.new(color.fuchsia, 0), textcolor = color.white, size = size.tiny)
+    if lastDivergence == DivergenceType.BULLISH
+        label.new(lastSwingLowSwingBar, lastSwingLowPrice, "DIV", style = label.style_label_up,
+             color = color.new(color.fuchsia, 0), textcolor = color.white, size = size.tiny)
+
+// Participation (Madde 24): rolling VWAP line + a small marker only on
+// CONFIRMING/DIVERGING bars (the two states worth flagging visually).
+plot(i_showParticipationMarks ? rollingVwap : na, "Rolling VWAP", color = color.new(color.yellow, 20), linewidth = 1)
+
+plotshape(i_showParticipationMarks and barstate.isconfirmed and partState == ParticipationState.CONFIRMING,
+     title = "Participation Confirming", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.tiny)
+plotshape(i_showParticipationMarks and barstate.isconfirmed and partState == ParticipationState.DIVERGING,
+     title = "Participation Diverging", style = shape.xcross, location = location.abovebar, color = color.orange, size = size.tiny)
+
+var array<box> zoneBoxes = array.new<box>()
+
+if i_showZones and barstate.islast
+    // Same empty-array guard as f_upsertZone above — Pine's `for a to b`
+    // still runs once at index 0 when b < a (e.g. array.size()-1 == -1 on an
+    // empty array), which crashed array.get()/array.delete() on bar 0.
+    if array.size(zoneBoxes) > 0
+        for i = 0 to array.size(zoneBoxes) - 1
+            box.delete(array.get(zoneBoxes, i))
+    array.clear(zoneBoxes)
+
+    if array.size(resistanceZones) > 0
+        for i = 0 to array.size(resistanceZones) - 1
+            Zone z = array.get(resistanceZones, i)
+            bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
+                 border_color = z.broken ? color.new(color.red, 70) : color.red,
+                 bgcolor = z.broken ? color.new(color.red, 95) : color.new(color.red, 85),
+                 border_style = z.broken ? line.style_dashed : line.style_solid)
+            array.push(zoneBoxes, bx)
+
+    if array.size(supportZones) > 0
+        for i = 0 to array.size(supportZones) - 1
+            Zone z = array.get(supportZones, i)
+            bx = box.new(left = z.createdBar, top = z.zoneHigh, right = bar_index + 10, bottom = z.zoneLow,
+                 border_color = z.broken ? color.new(color.lime, 70) : color.lime,
+                 bgcolor = z.broken ? color.new(color.lime, 95) : color.new(color.lime, 85),
+                 border_style = z.broken ? line.style_dashed : line.style_solid)
+            array.push(zoneBoxes, bx)
+
+// -----------------------------------------------------------------------------
+// FIBONACCI VISUAL (Madde 17) — redrawn only on the last bar, same pattern as
+// the zone boxes above. Empty-array guards are not needed here (arrays are
+// cleared then filled unconditionally in the same block), but each level's
+// existence is still checked by f_drawFibLevel via `not na(level)`.
+// -----------------------------------------------------------------------------
+var array<line> fibLines = array.new<line>()
+var array<label> fibLabels = array.new<label>()
+
+if i_showFib and barstate.islast
+    if array.size(fibLines) > 0
+        for i = 0 to array.size(fibLines) - 1
+            line.delete(array.get(fibLines, i))
+    array.clear(fibLines)
+    if array.size(fibLabels) > 0
+        for i = 0 to array.size(fibLabels) - 1
+            label.delete(array.get(fibLabels, i))
+    array.clear(fibLabels)
+
+    if fibValid
+        fibColor = color.new(color.aqua, 30)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib236, "0.236", fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib382, "0.382", fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib500, "0.5",   fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib618, "0.618", fibColor)
+        f_drawFibLevel(fibLines, fibLabels, legStartBar, bar_index + 10, fib786, "0.786", fibColor)
