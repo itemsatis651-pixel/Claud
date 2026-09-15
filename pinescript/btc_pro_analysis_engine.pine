@@ -287,6 +287,35 @@
 //      f_addDiagRow — which is now the PERMANENT mechanism until Madde 114:
 //      one growing row list, one small table, an input picks which page.
 //
+//  16. POSITION LIFECYCLE / EXIT ENGINE (Madde 56-58) — Phase G, part 1.
+//      Before this, CONFIRMED_LONG/CONFIRMED_SHORT was the last reachable
+//      state and was re-evaluated fresh every bar; it now immediately
+//      snapshots entry/stop/target (the SAME levels Risk Engine already
+//      computed at confirmation, Madde 111) and moves to IN_POSITION,
+//      which the Setup Classifier's own logic no longer touches (a new
+//      guard excludes IN_POSITION/EXIT/COOLDOWN) until the position
+//      closes. Only Madde 57's two most fundamental exits are implemented
+//      — INITIAL STOP and TARGET; structure invalidation, break-even,
+//      trailing, time stop, partial exit, and emergency exit are all
+//      explicitly deferred (see below), not silently skipped. Madde 57's
+//      same-bar ambiguity rule is applied literally: if a bar's range
+//      touches both stop and target, OHLC data alone can't say which came
+//      first, so the conservative outcome (stop) is always checked FIRST
+//      and wins — never the optimistic (target) outcome. EXIT persists
+//      for exactly one bar (visible in the panel and on the chart) before
+//      advancing to COOLDOWN, a simple fixed i_cooldownBars count-down
+//      (Madde 56's MINIMUM requirement only — don't re-enter immediately
+//      after closing — explicitly NOT EK-D's validated, cross-setup-aware
+//      cooldown, which needs real trade-outcome statistics this indicator
+//      doesn't track) before returning to FLAT. Caught and fixed, before
+//      delivery, a real bug this change would otherwise have introduced:
+//      the existing "CONFIRMED LONG/SHORT" chart label read currentState
+//      to decide direction/color, but currentState now advances to
+//      IN_POSITION within the SAME bar (before that visual code runs) —
+//      so the check would always read false, silently mislabeling every
+//      LONG as SHORT. Fixed by reading posDirection instead, which is set
+//      in the same transition and persists until the position closes.
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
 //     evidence — both now exist, but no scoring engine combines them yet,
@@ -308,29 +337,32 @@
 //     Madde 64's broader trigger taxonomy). Final Decision Engine (Madde
 //     37) — the Veto Engine now gates CONFIRMED_LONG/CONFIRMED_SHORT
 //     directly, but a dedicated scoring/aggregation Decision Engine layer
-//     on top of it does not exist yet. IN_POSITION/EXIT/COOLDOWN (Madde
-//     55-56 Position Lifecycle) still do not exist — need the Execution
-//     Engine, Phase G. Position sizing beyond the Risk Engine's own
+//     on top of it does not exist yet. Five of Madde 57's exit mechanisms
+//     — structure invalidation, break-even, trailing stop, time stop
+//     (Madde 58), partial exit, emergency exit — only INITIAL STOP/TARGET
+//     are built (module 16). Position sizing beyond the Risk Engine's own
 //     diagnostic numbers (Madde 48's spot/perpetual/MAX EXPOSURE nuances,
-//     Madde 88 backtest-time sizing) is out of scope until real positions
-//     exist to test it against. Some Madde 52 hard-veto/soft-penalty
-//     candidates are NOT checked because no data source exists for them
-//     yet: EXECUTION INVALID, LEVERAGE CASCADE RISK (EK-A), ACCOUNT
-//     CIRCUIT BREAKER (EK-C), position/exposure violation, unsupported
-//     timeframe (Madde 32), "late entry" (no defined threshold),
-//     repaint-sensitive final signal (N/A — nothing here repaints),
-//     critical calculation unavailable (already covered by Risk Engine's
-//     own NO STRUCTURAL STOP/NO TARGET ZONE statuses, not duplicated).
-//     Madde 38 (Minimum Independent Evidence, see module 15) is
-//     deliberately NOT a gate yet — no validated threshold exists, and the
-//     spec itself forbids guessing one. Phase C, D, AND E are complete;
-//     Phase F is now substantially complete (Risk Engine, all five Setup
-//     Classifier archetypes, the Veto Engine, and the Signal Quality
-//     Gate's REGIME CONFIDENCE clamp are all done — the engine can reach a
-//     real CONFIRMED_LONG/CONFIRMED_SHORT via any of the five setup types,
-//     gated by regime type AND confidence) per the Madde 121 roadmap; a
-//     scoring/aggregation Decision Engine layer and Madde 38's evidence
-//     count remain.
+//     Madde 88 backtest-time sizing) is out of scope until real
+//     backtesting exists to test it against. EK-C (Account-Level Circuit
+//     Breaker) and EK-D's validated/cross-setup-aware cooldown both need
+//     actual trade-outcome statistics (win/loss sequences) this indicator
+//     does not accumulate anywhere yet — i_cooldownBars only satisfies
+//     Madde 56's bare minimum (don't re-enter immediately), not EK-D's
+//     researched version. Some Madde 52 hard-veto/soft-penalty candidates
+//     are NOT checked because no data source exists for them yet:
+//     EXECUTION INVALID, LEVERAGE CASCADE RISK (EK-A — spec itself says
+//     don't fabricate this without reliable funding/OI/liquidation data),
+//     position/exposure violation, unsupported timeframe (Madde 32),
+//     "late entry" (no defined threshold), repaint-sensitive final signal
+//     (N/A — nothing here repaints), critical calculation unavailable
+//     (already covered by Risk Engine's own NO STRUCTURAL STOP/NO TARGET
+//     ZONE statuses, not duplicated). Madde 38 (Minimum Independent
+//     Evidence, see module 15) is deliberately NOT a gate yet — no
+//     validated threshold exists, and the spec itself forbids guessing
+//     one. Phase C, D, E, AND F are complete; Phase G is in progress
+//     (Position Lifecycle / initial stop+target Exit Engine done — the
+//     engine can now track an open position end-to-end, FLAT through
+//     COOLDOWN back to FLAT) per the Madde 121 roadmap.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -408,7 +440,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.15.1-diagnostics-pagination"
+var string ENGINE_VERSION = "v0.16.0-phaseG-position-lifecycle"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -1200,6 +1232,20 @@ i_leverage = input.float(1.0, "Leverage (1.0 = spot / no leverage)", minval = 1.
 grpVeto = "Veto Engine — hard vetoes block CONFIRMED, never hidden"
 i_entryPendingMaxBars = input.int(20, "ENTRY_PENDING Veto-Blocked Timeout (bars)", minval = 1, group = grpVeto,
      tooltip = "Madde 55 v3.1.1 EK — breakoutState ENTRY'ye ulaştığı ama hard veto yüzünden CONFIRMED'e geçemediği durumda, bu bar sayısından sonra FLAT'e döner (o zamana kadar ENTRY_PENDING'de görünür kalır).")
+
+// -----------------------------------------------------------------------------
+// INPUTS — EXECUTION / POSITION LIFECYCLE (Madde 56-58) — Phase G, part 1.
+// Only initial stop + target are implemented as exits this turn (Madde 57
+// lists break-even/trailing/time-stop/partial-exit/emergency-exit too, all
+// deferred — see header). i_cooldownBars satisfies ONLY Madde 56's minimum
+// requirement (don't re-enter immediately after an exit); it is explicitly
+// NOT EK-D's validated, cross-setup-aware cooldown, which needs actual
+// trade-outcome statistics this indicator doesn't track.
+// -----------------------------------------------------------------------------
+grpExecution = "Execution — Position Lifecycle (Madde 56-58, initial stop/target only)"
+i_cooldownBars = input.int(5, "Cooldown After Exit (bars)", minval = 0, group = grpExecution,
+     tooltip = "Madde 56 — pozisyon kapandıktan hemen sonra yeni CONFIRMED üretilmesini engeller. Başlangıç hipotezi (Madde 10/47 ile aynı disiplin) — EK-D'nin backtest ile doğrulanmış, cross-setup-farkında cooldown'u değildir.")
+i_showPositionMarks = input.bool(true, "Show Position Stop/Target Lines + Exit Marker", group = grpExecution)
 
 // -----------------------------------------------------------------------------
 // INPUTS — REMAINING SETUP ARCHETYPES (Madde 18) — shared by Pullback
@@ -2167,7 +2213,13 @@ vetoText = setupType == SetupType.NONE ? "N/A (no active setup)" :
 var int entryPendingBlockedBars = 0
 bool newlyConfirmed = false
 
-if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
+// Guard extended (Madde 56, Phase G): once a position is actually open
+// (IN_POSITION/EXIT/COOLDOWN), this setup-driven block must NOT keep
+// overwriting currentState from fresh structural signals — the position
+// lifecycle block below owns currentState exclusively until COOLDOWN
+// resolves back to FLAT, at which point this block resumes normally.
+if barstate.isconfirmed and currentState != EngineState.DATA_INVALID and
+     currentState != EngineState.IN_POSITION and currentState != EngineState.EXIT and currentState != EngineState.COOLDOWN
     provisionalState = setupType == SetupType.NONE ? EngineState.FLAT :
          setupStage == SetupStage.FORMING ? EngineState.WATCH :
          setupStage == SetupStage.CONFIRMED ? EngineState.SETUP :
@@ -2185,6 +2237,66 @@ if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
     else
         entryPendingBlockedBars := 0
         currentState := provisionalState
+
+// -----------------------------------------------------------------------------
+// POSITION LIFECYCLE / EXIT ENGINE (Madde 56-58) — Phase G, part 1. Only
+// INITIAL STOP + TARGET are implemented as exits (Madde 57 also lists
+// structure invalidation, break-even, trailing, time stop, partial exit,
+// emergency exit — all explicitly deferred, see header). One stage advance
+// per confirmed bar (mutually exclusive if/else-if on currentState AS IT
+// STOOD entering this bar) — so CONFIRMED_LONG/SHORT (set just above, same
+// bar) immediately becomes IN_POSITION also within this same bar (the
+// chart label below uses posDirection, not currentState, for exactly this
+// reason — currentState has already moved on by the time it draws); EXIT
+// is then genuinely visible for one full bar before advancing to COOLDOWN
+// on the NEXT bar, and COOLDOWN counts down before returning to FLAT.
+// -----------------------------------------------------------------------------
+var float posEntryPrice  = na
+var float posStopLevel   = na
+var float posTargetLevel = na
+var BreakoutDirection posDirection = BreakoutDirection.NONE
+var int posEntryBar = na
+var string posExitReason = "N/A"
+var int cooldownBarsLeft = 0
+
+if barstate.isconfirmed and currentState != EngineState.DATA_INVALID
+    if currentState == EngineState.CONFIRMED_LONG or currentState == EngineState.CONFIRMED_SHORT
+        if na(posEntryPrice)
+            posEntryPrice  := riskEntry
+            posDirection   := setupDir
+            posStopLevel   := setupDir == BreakoutDirection.UP ? longStopLevel : shortStopLevel
+            posTargetLevel := setupDir == BreakoutDirection.UP ? longTargetLevel : shortTargetLevel
+            posEntryBar    := bar_index
+            currentState   := EngineState.IN_POSITION
+    else if currentState == EngineState.IN_POSITION
+        // Madde 57: if a bar touches BOTH stop and target, OHLC alone can't
+        // tell us which happened first — never assume the optimistic
+        // outcome. stopHit is checked FIRST and takes precedence.
+        stopHit   = posDirection == BreakoutDirection.UP ? low <= posStopLevel : high >= posStopLevel
+        targetHit = posDirection == BreakoutDirection.UP ? high >= posTargetLevel : low <= posTargetLevel
+        if stopHit
+            posExitReason := "STOP HIT"
+            currentState  := EngineState.EXIT
+        else if targetHit
+            posExitReason := "TARGET HIT"
+            currentState  := EngineState.EXIT
+    else if currentState == EngineState.EXIT
+        cooldownBarsLeft := i_cooldownBars
+        currentState     := EngineState.COOLDOWN
+        posEntryPrice    := na
+        posStopLevel     := na
+        posTargetLevel   := na
+        posDirection     := BreakoutDirection.NONE
+    else if currentState == EngineState.COOLDOWN
+        cooldownBarsLeft := cooldownBarsLeft - 1
+        if cooldownBarsLeft <= 0
+            currentState := EngineState.FLAT
+
+positionText = currentState == EngineState.IN_POSITION ?
+     f_breakoutDirLabel(posDirection) + "  entry " + str.tostring(posEntryPrice) + "  stop " + str.tostring(posStopLevel) + "  target " + str.tostring(posTargetLevel) :
+     currentState == EngineState.EXIT ? "EXIT (" + posExitReason + ")" :
+     currentState == EngineState.COOLDOWN ? "COOLDOWN (" + str.tostring(math.max(cooldownBarsLeft, 0)) + " bars left, last: " + posExitReason + ")" :
+     "N/A"
 
 // -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
@@ -2286,6 +2398,8 @@ f_addDiagRow(diagLabels, diagValues, diagColors, "SETUP RISK", setupRiskText, co
 f_addDiagRow(diagLabels, diagValues, diagColors, "VETO (HARD)", hardVetoActive ? hardVetoText : (setupType == SetupType.NONE ? "N/A" : "none"), hardVetoActive ? color.red : color.gray)
 f_addDiagRow(diagLabels, diagValues, diagColors, "VETO (SOFT)", array.size(softPenalties) > 0 ? softPenaltyText : (setupType == SetupType.NONE ? "N/A" : "none"), array.size(softPenalties) > 0 ? color.orange : color.gray)
 f_addDiagRow(diagLabels, diagValues, diagColors, "REQUEST BUDGET", "1 / 40 (MTF: 1 tuple request.security call)", color.gray)
+f_addDiagRow(diagLabels, diagValues, diagColors, "POSITION", positionText,
+     currentState == EngineState.IN_POSITION ? color.yellow : currentState == EngineState.EXIT ? (posExitReason == "TARGET HIT" ? color.lime : color.red) : color.gray)
 
 // Slice: page 1 = rows 0..(N-1), page 2 = rows N..(2N-1), etc. Division by
 // i_diagRowsPerPage promotes to float in Pine, so math.ceil gives the true
@@ -2361,12 +2475,37 @@ if i_showBreakoutMarks and barstate.isconfirmed and breakoutStateBar == bar_inde
 // triggered — not redrawn every bar it persists), separate from the
 // Breakout FSM's own "ENTRY (structural only)" label above since this one
 // means the Veto Engine found no hard veto, a materially different claim.
+// v0.16.0 QA FIX caught before delivery (Madde 125): now that CONFIRMED_LONG/
+// SHORT immediately advances to IN_POSITION within the SAME bar (Phase G
+// position lifecycle, below), currentState no longer RESTS at CONFIRMED_LONG/
+// SHORT by the time this visual code runs later in the same bar's execution
+// — checking `currentState == EngineState.CONFIRMED_LONG` here would always
+// be false, silently mislabeling every LONG confirmation as SHORT. Use
+// posDirection instead, which is set in the same transition and persists
+// through to this point (only cleared on the EXIT->COOLDOWN transition, a
+// later bar).
 if i_showBreakoutMarks and barstate.isconfirmed and newlyConfirmed
-    label.new(bar_index, currentState == EngineState.CONFIRMED_LONG ? low : high,
-         "CONFIRMED " + (currentState == EngineState.CONFIRMED_LONG ? "LONG" : "SHORT"),
-         style = currentState == EngineState.CONFIRMED_LONG ? label.style_label_up : label.style_label_down,
-         color = color.new(currentState == EngineState.CONFIRMED_LONG ? color.lime : color.red, 0),
+    label.new(bar_index, posDirection == BreakoutDirection.UP ? low : high,
+         "CONFIRMED " + (posDirection == BreakoutDirection.UP ? "LONG" : "SHORT"),
+         style = posDirection == BreakoutDirection.UP ? label.style_label_up : label.style_label_down,
+         color = color.new(posDirection == BreakoutDirection.UP ? color.lime : color.red, 0),
          textcolor = color.white, size = size.small)
+
+// Position Lifecycle (Madde 56-58): stop/target lines while IN_POSITION
+// (na while idle, via plot.style_linebr so the line breaks cleanly rather
+// than dragging a stale level across idle periods — same pattern as the
+// Breakout Level plot above), and an EXIT marker on the bar the position
+// actually closes (currentState rests at EXIT for exactly one bar, see the
+// POSITION LIFECYCLE section's own comment).
+plot(i_showPositionMarks and currentState == EngineState.IN_POSITION ? posStopLevel : na, "Position Stop",
+     color = color.new(color.red, 20), style = plot.style_linebr, linewidth = 1)
+plot(i_showPositionMarks and currentState == EngineState.IN_POSITION ? posTargetLevel : na, "Position Target",
+     color = color.new(color.lime, 20), style = plot.style_linebr, linewidth = 1)
+
+if i_showPositionMarks and barstate.isconfirmed and currentState == EngineState.EXIT
+    label.new(bar_index, posDirection == BreakoutDirection.UP ? high : low, "EXIT: " + posExitReason,
+         style = posDirection == BreakoutDirection.UP ? label.style_label_down : label.style_label_up,
+         color = color.new(posExitReason == "TARGET HIT" ? color.lime : color.red, 0), textcolor = color.white, size = size.small)
 
 // Price Action (Madde 22): small dots on the confirmed bar, bullish patterns
 // below the bar, bearish above — diagnostic only, not a trigger/entry.
