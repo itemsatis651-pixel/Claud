@@ -1,9 +1,9 @@
 //@version=6
 
 // =============================================================================
-// BTC PRO STRATEGY PRETEST — Breakout Retest only, standalone Strategy Tester
+// BTC PRO STRATEGY PRETEST - Breakout Retest only, standalone Strategy Tester
 // probe. NOT the main analysis engine and NOT subject to its Madde 122/123
-// one-module-per-turn cadence — this is a satellite tool built for ONE
+// one-module-per-turn cadence - this is a satellite tool built for ONE
 // purpose: a quick, honest Strategy Tester check of whether the single
 // simplest archetype (Breakout Retest, Madde 20-21) with a FIXED initial
 // stop/target (Madde 44-45) has any edge at all, before investing further
@@ -12,7 +12,7 @@
 //
 // WHY A SEPARATE FILE (verified, not assumed, Madde 127): Pine Script's
 // strategy.* namespace (strategy.entry/strategy.exit/etc.) is ONLY available
-// in scripts declared with strategy() — an indicator()-declared script
+// in scripts declared with strategy() - an indicator()-declared script
 // cannot call it at all, not even behind a runtime input toggle. This is
 // enforced at compile time by the declaration statement itself (confirmed
 // against TradingView's own documented error class for this). A single
@@ -20,44 +20,44 @@
 // something Pine allows, so this had to be a second file rather than an
 // i_strategyMode input inside the main one.
 //
-// SCOPE (per explicit user instruction — filters minimized for this FIRST
+// SCOPE (per explicit user instruction - filters minimized for this FIRST
 // pretest, to see whether the bare structural pattern itself has an edge
 // before measuring what each filter individually contributes):
-//   - ONLY Breakout Retest (Madde 20-21) — the other four Setup Classifier
+//   - ONLY Breakout Retest (Madde 20-21) - the other four Setup Classifier
 //     archetypes (Pullback Continuation, Range Rejection, Failed Breakout
 //     Reversal, Mean Reversion) are NOT ported here.
 //   - Entry gate: the SAME regime-type eligibility as the main engine
-//     (Madde 19 — f_breakoutRetestEligible) is part of the core archetype
+//     (Madde 19 - f_breakoutRetestEligible) is part of the core archetype
 //     definition, so it stays ON. R:R minimum (Madde 47), Regime Confidence
 //     >= MEDIUM (Madde 37 v3.1 EK Signal Quality Gate), and MTF conflict
 //     veto (Madde 31/52) are each OFF by default but wired as independent
 //     toggle inputs, so each one's individual contribution can be measured
 //     in a later round without new code.
 //   - Fixed INITIAL STOP + TARGET only (Madde 44-46, same f_riskCalc
-//     formula as the main engine) — no break-even, trailing, time stop,
+//     formula as the main engine) - no break-even, trailing, time stop,
 //     partial exit, or emergency exit (Madde 57's other six exits).
-//   - Position sizing: 100% of equity per trade, no leverage — Madde 48's
+//   - Position sizing: 100% of equity per trade, no leverage - Madde 48's
 //     spot/perpetual/MAX EXPOSURE nuances are explicitly out of scope here.
 //
 // EXECUTION COST HONESTY: commission and slippage are REAL, non-zero inputs
 // (default ~0.10% commission, matching OKX's typical taker fee; slippage in
-// ticks — TradingView's own strategy() parameter, whose $ impact depends on
+// ticks - TradingView's own strategy() parameter, whose $ impact depends on
 // syminfo.mintick for your exact chart/instrument, so the default is a
-// starting point, not a precise OKX-calibrated number — check it against
+// starting point, not a precise OKX-calibrated number - check it against
 // your chart's actual tick size and adjust if it looks too small/large).
 //
 // SAME-BAR STOP/TARGET AMBIGUITY (Madde 57): TradingView's DEFAULT broker
 // emulator (Bar Magnifier OFF) can resolve a bar that touches BOTH the stop
-// and the target optimistically rather than conservatively — this is the
+// and the target optimistically rather than conservatively - this is the
 // OPPOSITE of Madde 57's "never assume the optimistic outcome" rule, and is
 // a documented TradingView behavior, not a bug in this script. To keep this
 // pretest's results conservative and consistent with the main engine's own
 // Position Lifecycle module (which explicitly checks stop before target),
 // ENABLE "Bar Magnifier" in the Strategy Tester's Properties tab before
-// trusting the results — without it, reported performance may be mildly
+// trusting the results - without it, reported performance may be mildly
 // optimistic on bars where both levels were touched.
 //
-// Reused verbatim from btc_pro_analysis_engine.pine (Madde 111 — same
+// Reused verbatim from btc_pro_analysis_engine.pine (Madde 111 - same
 // formulas, not reinvented): Market Regime classification, the central
 // confirmed-swing function (Madde 14 v3.1 EK), Zone engine (Madde 15-16),
 // Breakout/Retest FSM (Madde 20-21), f_riskCalc's stop/target formula
@@ -78,9 +78,9 @@ strategy("BTC PRO Strategy Pretest - Breakout Retest",
      max_bars_back = 500)
 
 // -----------------------------------------------------------------------------
-// ENUMS + PURE HELPERS (verbatim ports from btc_pro_analysis_engine.pine —
+// ENUMS + PURE HELPERS (verbatim ports from btc_pro_analysis_engine.pine -
 // same field names/logic, Madde 111. Trimmed to only what Breakout Retest
-// + fixed stop/target actually needs — no Price Action/Momentum/
+// + fixed stop/target actually needs - no Price Action/Momentum/
 // Participation/other archetypes.)
 // -----------------------------------------------------------------------------
 enum RegimeType
@@ -263,11 +263,11 @@ i_candidateMaxBars = input.int(10, "Candidate Timeout (bars)", minval = 1, group
 i_retestAtrMult = input.float(0.3, "Retest Touch Tolerance (x ATR)", minval = 0.05, group = grpBreakout)
 i_retestMaxBars = input.int(30, "Retest Timeout (bars since confirmed)", minval = 1, group = grpBreakout)
 
-grpRisk = "Risk — fixed initial stop/target only"
+grpRisk = "Risk - fixed initial stop/target only"
 i_riskAtrBufferMult = input.float(0.5, "Stop ATR Buffer (x ATR beyond structural level)", minval = 0, group = grpRisk)
 i_maxStopDistancePct = input.float(5.0, "Max Acceptable Stop Distance (% of price)", minval = 0.1, group = grpRisk)
 
-grpFilters = "Optional Filters (OFF by default — this first pretest measures the bare structural pattern)"
+grpFilters = "Optional Filters (OFF by default - this first pretest measures the bare structural pattern)"
 i_useRRGate = input.bool(false, "Enable R:R Minimum Gate (Madde 47)", group = grpFilters)
 i_minRR = input.float(1.5, "Minimum R:R (only applied if gate enabled above)", minval = 0.1, group = grpFilters)
 i_useConfidenceGate = input.bool(false, "Enable Regime Confidence >= MEDIUM Gate (Madde 37 v3.1 EK)", group = grpFilters)
@@ -460,7 +460,7 @@ breakoutStateText = f_breakoutStateLabel(breakoutState) + (breakoutDir == Breako
 // -----------------------------------------------------------------------------
 // OPTIONAL FILTER: MTF (verbatim non-repainting pattern port, Madde 28-29).
 // Always computed (request.security must be called unconditionally at
-// global scope) — i_useMtfGate only decides whether it's USED as a gate.
+// global scope) - i_useMtfGate only decides whether it's USED as a gate.
 // -----------------------------------------------------------------------------
 chartTfSeconds = timeframe.in_seconds(timeframe.period)
 manualTfSeconds = timeframe.in_seconds(i_mtfManualTf)
@@ -480,8 +480,8 @@ htfBiasRaw = htfClose > htfEma and htfEma > htfEmaSlopeRef ? StructureBias.BULLI
 mtfConflict = mtfAvailable and htfBiasRaw != StructureBias.NEUTRAL and structureBias != StructureBias.NEUTRAL and htfBiasRaw != structureBias
 
 // -----------------------------------------------------------------------------
-// ENTRY / RISK — fixed initial stop + target only (Madde 44-46), computed
-// ONLY for the active breakout direction (not symmetric long/short — this
+// ENTRY / RISK - fixed initial stop + target only (Madde 44-46), computed
+// ONLY for the active breakout direction (not symmetric long/short - this
 // pretest only ever considers the setup the FSM actually produced).
 // -----------------------------------------------------------------------------
 entryTriggerBar = breakoutState == BreakoutFSMState.ENTRY and breakoutStateBar == bar_index
@@ -517,7 +517,7 @@ riskOk         = riskStatus == "OK"
 canEnter = entryTriggerBar and regimeEligible and confidenceOk and mtfOk and riskOk and strategy.position_size == 0
 
 // -----------------------------------------------------------------------------
-// ORDER PLACEMENT — fixed stop/target snapshotted at entry (never recomputed
+// ORDER PLACEMENT - fixed stop/target snapshotted at entry (never recomputed
 // mid-trade, matching the main engine's own Position Lifecycle design).
 // -----------------------------------------------------------------------------
 var float posStop   = na
@@ -542,7 +542,7 @@ if strategy.position_size == 0
     posTarget := na
 
 // -----------------------------------------------------------------------------
-// VISUALS — minimal: EMAs, breakout level, entry markers, stop/target lines.
+// VISUALS - minimal: EMAs, breakout level, entry markers, stop/target lines.
 // -----------------------------------------------------------------------------
 plot(emaFast, "EMA Fast", color = color.new(color.teal, 30))
 plot(emaMid,  "EMA Mid",  color = color.new(color.orange, 30))
@@ -561,9 +561,9 @@ if i_showMarks and canEnter
          color = color.new(isLongTrigger ? color.lime : color.red, 0), textcolor = color.white, size = size.small)
 
 // -----------------------------------------------------------------------------
-// INFO TABLE — compact, on-chart sanity readout. The REAL results are
+// INFO TABLE - compact, on-chart sanity readout. The REAL results are
 // TradingView's own Strategy Tester tab (List of Trades / Performance
-// Summary) — this table exists only so you can see live status while
+// Summary) - this table exists only so you can see live status while
 // watching the chart. Madde 122's own project discipline (never trust a
 // small sample) applies here too: closed trade count is color-flagged red
 // below 30.
