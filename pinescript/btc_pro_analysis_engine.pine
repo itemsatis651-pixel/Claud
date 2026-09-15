@@ -316,6 +316,40 @@
 //      LONG as SHORT. Fixed by reading posDirection instead, which is set
 //      in the same transition and persists until the position closes.
 //
+//  17. ALERT ENGINE (Madde 116-117) — Phase G, part 2. State-transition/
+//      event based per Madde 116: WATCH ENTER, SETUP ENTER, CONFIRMED
+//      LONG, CONFIRMED SHORT, HARD VETO, EXIT, COOLDOWN — each fires
+//      exactly once on entering that state/condition, never repeating on
+//      consecutive bars while it persists (edge-triggered via a
+//      lastAlertedState/lastAlertedHardVeto comparison; CONFIRMED LONG/
+//      SHORT specifically use the existing `newlyConfirmed` flag instead,
+//      since currentState advances to IN_POSITION within the same bar —
+//      same reasoning as the chart label's posDirection fix in module 16).
+//      Message content follows Madde 117's example format populated from
+//      REAL, already-computed evidence only (regime, structure, location,
+//      setup, momentum, participation, MTF, volatility, entry/stop/
+//      target/R:R) — reused, not recomputed (Madde 111).
+//
+//      TWO explicit corrections made per user instruction before building
+//      this, both verified rather than assumed (Madde 127):
+//      (a) ALERT TIMING: TradingView's own official documentation
+//      ("Delays in OncePerBarClose alerts") confirms alert()/
+//      alertcondition() do NOT fire at the exact instant of confirmed bar
+//      close — the server waits for the first trade of the FOLLOWING bar
+//      to confirm no late trades belong to the closing bar (typically a
+//      few seconds), with a ~1-minute worst-case fallback during illiquid
+//      periods. This matches EK-H's own text exactly ("bir sonraki
+//      tick'te tetiklenir"). The SCRIPT's decision of WHICH state to
+//      alert is still fully non-repainting (computed from
+//      barstate.isconfirmed data); only the real-world notification
+//      DELIVERY lags — a real, documented gap (Madde 136), not silently
+//      ignored.
+//      (b) SCORE/CONFIDENCE: Madde 117's example message includes these,
+//      but neither a scoring/aggregation engine (Madde 41) nor a
+//      composite Signal Confidence (Madde 39) has been built. NOT
+//      fabricated — shown as "N/A (not implemented)" in the alert
+//      message so the gap is visible and explained, not silently dropped.
+//
 // EXPLICITLY DEFERRED (not yet built — no silent/fake behavior, Madde 139/140):
 //   - Full REACTION QUALITY per touch (needs Price Action + Participation
 //     evidence — both now exist, but no scoring engine combines them yet,
@@ -332,15 +366,17 @@
 //     note above), not merely postponed. Full multi-level MTF cascade (only
 //     ONE HTF level is requested so far, not the full 1D/4H/1H/15m stack)
 //     remains deferred.
-//   - Compact panel (Madde 114), Alert engine (Madde 116-117). Trigger
-//     engine (distinct from the Setup Classifier's own trigger concept —
-//     Madde 64's broader trigger taxonomy). Final Decision Engine (Madde
-//     37) — the Veto Engine now gates CONFIRMED_LONG/CONFIRMED_SHORT
-//     directly, but a dedicated scoring/aggregation Decision Engine layer
-//     on top of it does not exist yet. Five of Madde 57's exit mechanisms
-//     — structure invalidation, break-even, trailing stop, time stop
-//     (Madde 58), partial exit, emergency exit — only INITIAL STOP/TARGET
-//     are built (module 16). Position sizing beyond the Risk Engine's own
+//   - Compact panel (Madde 114). Trigger engine (distinct from the Setup
+//     Classifier's own trigger concept — Madde 64's broader trigger
+//     taxonomy). Final Decision Engine (Madde 37) — the Veto Engine now
+//     gates CONFIRMED_LONG/CONFIRMED_SHORT directly, but a dedicated
+//     scoring/aggregation Decision Engine layer on top of it does not
+//     exist yet — this is also why the Alert Engine's SCORE/CONFIDENCE
+//     fields show "N/A (not implemented)" rather than a fabricated number
+//     (module 17). Five of Madde 57's exit mechanisms — structure
+//     invalidation, break-even, trailing stop, time stop (Madde 58),
+//     partial exit, emergency exit — only INITIAL STOP/TARGET are built
+//     (module 16). Position sizing beyond the Risk Engine's own
 //     diagnostic numbers (Madde 48's spot/perpetual/MAX EXPOSURE nuances,
 //     Madde 88 backtest-time sizing) is out of scope until real
 //     backtesting exists to test it against. EK-C (Account-Level Circuit
@@ -359,10 +395,12 @@
 //     ZONE statuses, not duplicated). Madde 38 (Minimum Independent
 //     Evidence, see module 15) is deliberately NOT a gate yet — no
 //     validated threshold exists, and the spec itself forbids guessing
-//     one. Phase C, D, E, AND F are complete; Phase G is in progress
-//     (Position Lifecycle / initial stop+target Exit Engine done — the
-//     engine can now track an open position end-to-end, FLAT through
-//     COOLDOWN back to FLAT) per the Madde 121 roadmap.
+//     one. Phase C, D, E, AND F are complete; Phase G is now substantially
+//     complete (Position Lifecycle, initial stop+target Exit Engine, AND
+//     the Alert Engine are all done — the engine can now track an open
+//     position end-to-end, FLAT through COOLDOWN back to FLAT, and notify
+//     on every state transition) per the Madde 121 roadmap; the remaining
+//     Madde 57 exit mechanisms are what's left in Phase G.
 //
 // Non-repaint policy unchanged (Madde 33-34): all diagnostics are computed
 // live every tick (clearly marked), but `currentState`, `primaryRegime`,
@@ -440,7 +478,7 @@
 // ENGINE_VERSION instead, where there is no length limit.
 indicator("BTC PRO ANALYSIS ENGINE", shorttitle = "BTC-PRO", overlay = true, max_labels_count = 200, max_boxes_count = 50, max_lines_count = 50, max_bars_back = 500)
 
-var string ENGINE_VERSION = "v0.16.0-phaseG-position-lifecycle"
+var string ENGINE_VERSION = "v0.17.0-phaseG-alert-engine"
 
 // -----------------------------------------------------------------------------
 // STATE MACHINE SKELETON (Madde 55)
@@ -1246,6 +1284,13 @@ grpExecution = "Execution — Position Lifecycle (Madde 56-58, initial stop/targ
 i_cooldownBars = input.int(5, "Cooldown After Exit (bars)", minval = 0, group = grpExecution,
      tooltip = "Madde 56 — pozisyon kapandıktan hemen sonra yeni CONFIRMED üretilmesini engeller. Başlangıç hipotezi (Madde 10/47 ile aynı disiplin) — EK-D'nin backtest ile doğrulanmış, cross-setup-farkında cooldown'u değildir.")
 i_showPositionMarks = input.bool(true, "Show Position Stop/Target Lines + Exit Marker", group = grpExecution)
+
+// -----------------------------------------------------------------------------
+// INPUTS — ALERT ENGINE (Madde 116-117) — Phase G, part 2.
+// -----------------------------------------------------------------------------
+grpAlerts = "Alert Engine — state-transition based, fires on confirmed bar (see delay note, Madde 125/127)"
+i_enableAlerts = input.bool(true, "Enable Alerts", group = grpAlerts,
+     tooltip = "Madde 116 — WATCH ENTER / SETUP ENTER / CONFIRMED LONG / CONFIRMED SHORT / HARD VETO / EXIT / COOLDOWN, her biri yalnızca o duruma GİRİLDİĞİNDE bir kez (Madde 116: 'aynı state her candle'da tekrar alert vermemeli'). Gerçek bildirim almak için TradingView'de bu indikatöre 'Any alert() function call' tipinde bir alarm kurmanız gerekir.")
 
 // -----------------------------------------------------------------------------
 // INPUTS — REMAINING SETUP ARCHETYPES (Madde 18) — shared by Pullback
@@ -2297,6 +2342,88 @@ positionText = currentState == EngineState.IN_POSITION ?
      currentState == EngineState.EXIT ? "EXIT (" + posExitReason + ")" :
      currentState == EngineState.COOLDOWN ? "COOLDOWN (" + str.tostring(math.max(cooldownBarsLeft, 0)) + " bars left, last: " + posExitReason + ")" :
      "N/A"
+
+// -----------------------------------------------------------------------------
+// ALERT ENGINE (Madde 116-117) — Phase G, part 2. State-transition/event
+// based, never re-firing for the same state on consecutive bars (Madde
+// 116). Fires on the confirmed bar — but see the TIMING NOTE in this
+// turn's delivery message: per TradingView's own official docs (verified
+// this turn, Madde 127) and this spec's own EK-H, the actual alert()
+// notification is NOT delivered at the exact instant of confirmed bar
+// close — it is delivered on the next possible tick (server waits for the
+// first trade of the following bar to confirm no late trades, with a
+// documented ~1-minute worst-case fallback during illiquid periods). The
+// SCRIPT's own decision (which state to alert, computed from
+// barstate.isconfirmed data) is still fully non-repainting; only the
+// notification's real-world DELIVERY time lags slightly (Madde 136
+// backtest/live parity — the gap is real, not ignored).
+//
+// SCORE and CONFIDENCE appear in Madde 117's example alert format, but
+// NEITHER exists in this script — no scoring/aggregation engine (Madde 41)
+// and no composite Signal Confidence (Madde 39) have been built. Per
+// explicit user instruction: NOT fabricated. Shown as "N/A (not
+// implemented)" rather than silently dropped, so the field's absence is
+// visible and explained, not just missing (Madde 139/140).
+// -----------------------------------------------------------------------------
+alertLocationText = setupDir == BreakoutDirection.UP ? supZoneText : setupDir == BreakoutDirection.DOWN ? resZoneText : "N/A"
+alertRRText = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ?
+     (na(posEntryPrice) or na(posStopLevel) or posEntryPrice == posStopLevel ? "N/A" : str.tostring(math.abs(posTargetLevel - posEntryPrice) / math.abs(posEntryPrice - posStopLevel), "#.##")) :
+     setupDir == BreakoutDirection.UP ? (na(longRR) ? "N/A" : str.tostring(longRR, "#.##")) :
+     setupDir == BreakoutDirection.DOWN ? (na(shortRR) ? "N/A" : str.tostring(shortRR, "#.##")) :
+     "N/A"
+alertEntryText  = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ? (na(posEntryPrice) ? "N/A" : str.tostring(posEntryPrice)) : str.tostring(riskEntry)
+alertStopText   = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ? (na(posStopLevel) ? "N/A" : str.tostring(posStopLevel)) :
+     setupDir == BreakoutDirection.UP ? (na(longStopLevel) ? "N/A" : str.tostring(longStopLevel)) : setupDir == BreakoutDirection.DOWN ? (na(shortStopLevel) ? "N/A" : str.tostring(shortStopLevel)) : "N/A"
+alertTargetText = currentState == EngineState.IN_POSITION or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN ? (na(posTargetLevel) ? "N/A" : str.tostring(posTargetLevel)) :
+     setupDir == BreakoutDirection.UP ? (na(longTargetLevel) ? "N/A" : str.tostring(longTargetLevel)) : setupDir == BreakoutDirection.DOWN ? (na(shortTargetLevel) ? "N/A" : str.tostring(shortTargetLevel)) : "N/A"
+
+alertMessage = "BTC PRO ENGINE\n\n" +
+     "REGIME: " + f_regimeLabel(primaryRegime) + "\n" +
+     "STRUCTURE: " + f_biasLabel(structureBias) + "\n" +
+     "LOCATION: " + alertLocationText + "\n" +
+     "SETUP: " + f_setupTypeLabel(setupType) + (setupType == SetupType.NONE ? "" : " " + f_breakoutDirLabel(setupDir)) + "\n" +
+     "MOMENTUM: " + momentumText + "\n" +
+     "PARTICIPATION: " + participationText + "\n" +
+     "MTF: " + f_mtfAgreementLabel(mtfAgreement) + "\n" +
+     "VOLATILITY: " + f_volLabel(volRegime) + "\n\n" +
+     "ENTRY: " + alertEntryText + "\n" +
+     "STOP: " + alertStopText + "\n" +
+     "TARGET: " + alertTargetText + "\n" +
+     "R:R: " + alertRRText + "\n\n" +
+     "SCORE: N/A (not implemented)\n" +
+     "CONFIDENCE: N/A (not implemented)\n" +
+     "VETO: " + (hardVetoActive ? hardVetoText : "NONE")
+
+var EngineState lastAlertedState = EngineState.DATA_INVALID
+var bool lastAlertedHardVeto = false
+
+// WATCH ENTER / SETUP ENTER / EXIT / COOLDOWN: currentState genuinely
+// RESTS at these values across bars, so comparing against the last
+// alerted state correctly catches the transition and never repeats
+// (Madde 116). CONFIRMED_LONG/CONFIRMED_SHORT deliberately excluded here
+// and handled separately below via `newlyConfirmed` — currentState
+// advances to IN_POSITION within the SAME bar it becomes CONFIRMED (Phase
+// G part 1), so it would never actually be observed resting at
+// CONFIRMED_LONG/SHORT by this comparison (same lesson as the chart
+// label's posDirection fix).
+stateChangedForAlert = barstate.isconfirmed and currentState != lastAlertedState and currentState != EngineState.DATA_INVALID
+if i_enableAlerts and stateChangedForAlert and
+     (currentState == EngineState.WATCH or currentState == EngineState.SETUP or currentState == EngineState.EXIT or currentState == EngineState.COOLDOWN)
+    alertStateLabel = currentState == EngineState.WATCH ? "WATCH ENTER" :
+         currentState == EngineState.SETUP ? "SETUP ENTER" :
+         currentState == EngineState.EXIT ? "EXIT (" + posExitReason + ")" :
+         "COOLDOWN"
+    alert(alertStateLabel + "\n\n" + alertMessage, freq = alert.freq_once_per_bar_close)
+
+if i_enableAlerts and barstate.isconfirmed and newlyConfirmed
+    alert((posDirection == BreakoutDirection.UP ? "CONFIRMED LONG" : "CONFIRMED SHORT") + "\n\n" + alertMessage, freq = alert.freq_once_per_bar_close)
+
+if i_enableAlerts and barstate.isconfirmed and hardVetoActive and not lastAlertedHardVeto and setupType != SetupType.NONE
+    alert("HARD VETO\n\n" + alertMessage, freq = alert.freq_once_per_bar_close)
+
+if barstate.isconfirmed
+    lastAlertedState    := currentState
+    lastAlertedHardVeto := hardVetoActive
 
 // -----------------------------------------------------------------------------
 // DIAGNOSTICS (temporary — NOT the Madde 114 panel)
