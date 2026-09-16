@@ -1,0 +1,601 @@
+//@version=6
+
+// =============================================================================
+// BTC PRO STRATEGY PRETEST - Breakout Retest only, standalone Strategy Tester
+// probe. NOT the main analysis engine and NOT subject to its Madde 122/123
+// one-module-per-turn cadence - this is a satellite tool built for ONE
+// purpose: a quick, honest Strategy Tester check of whether the single
+// simplest archetype (Breakout Retest, Madde 20-21) with a FIXED initial
+// stop/target (Madde 44-45) has any edge at all, before investing further
+// design effort. btc_pro_analysis_engine.pine (the real indicator) is
+// UNTOUCHED by this file.
+//
+// WHY A SEPARATE FILE (verified, not assumed, Madde 127): Pine Script's
+// strategy.* namespace (strategy.entry/strategy.exit/etc.) is ONLY available
+// in scripts declared with strategy() - an indicator()-declared script
+// cannot call it at all, not even behind a runtime input toggle. This is
+// enforced at compile time by the declaration statement itself (confirmed
+// against TradingView's own documented error class for this). A single
+// script that toggles between "indicator mode" and "strategy mode" is not
+// something Pine allows, so this had to be a second file rather than an
+// i_strategyMode input inside the main one.
+//
+// SCOPE (per explicit user instruction - filters minimized for this FIRST
+// pretest, to see whether the bare structural pattern itself has an edge
+// before measuring what each filter individually contributes):
+//   - ONLY Breakout Retest (Madde 20-21) - the other four Setup Classifier
+//     archetypes (Pullback Continuation, Range Rejection, Failed Breakout
+//     Reversal, Mean Reversion) are NOT ported here.
+//   - Entry gate: the SAME regime-type eligibility as the main engine
+//     (Madde 19 - f_breakoutRetestEligible) is part of the core archetype
+//     definition, so it stays ON. R:R minimum (Madde 47), Regime Confidence
+//     >= MEDIUM (Madde 37 v3.1 EK Signal Quality Gate), and MTF conflict
+//     veto (Madde 31/52) are each OFF by default but wired as independent
+//     toggle inputs, so each one's individual contribution can be measured
+//     in a later round without new code.
+//   - Fixed INITIAL STOP + TARGET only (Madde 44-46, same f_riskCalc
+//     formula as the main engine) - no break-even, trailing, time stop,
+//     partial exit, or emergency exit (Madde 57's other six exits).
+//   - Position sizing: 100% of equity per trade, no leverage - Madde 48's
+//     spot/perpetual/MAX EXPOSURE nuances are explicitly out of scope here.
+//
+// EXECUTION COST HONESTY: commission and slippage are REAL, non-zero, fixed
+// in this declaration (0.10% commission, matching OKX's typical taker fee;
+// 10 ticks slippage). input.*() calls are NOT valid as default values inside
+// an indicator()/strategy()/library() declaration statement itself - that
+// was the actual bug behind three straight rounds of the same compile
+// errors, not any character corruption. To change these values, use
+// TradingView's own Strategy Tester -> Properties tab (Commission, Slippage
+// fields there override these), or edit the two numbers below directly.
+// Slippage is in ticks, so its $ impact depends on syminfo.mintick for your
+// exact chart/instrument - check it against your chart's actual tick size.
+//
+// SAME-BAR STOP/TARGET AMBIGUITY (Madde 57): TradingView's DEFAULT broker
+// emulator (Bar Magnifier OFF) can resolve a bar that touches BOTH the stop
+// and the target optimistically rather than conservatively - this is the
+// OPPOSITE of Madde 57's "never assume the optimistic outcome" rule, and is
+// a documented TradingView behavior, not a bug in this script. To keep this
+// pretest's results conservative and consistent with the main engine's own
+// Position Lifecycle module (which explicitly checks stop before target),
+// ENABLE "Bar Magnifier" in the Strategy Tester's Properties tab before
+// trusting the results - without it, reported performance may be mildly
+// optimistic on bars where both levels were touched.
+//
+// Reused verbatim from btc_pro_analysis_engine.pine (Madde 111 - same
+// formulas, not reinvented): Market Regime classification, the central
+// confirmed-swing function (Madde 14 v3.1 EK), Zone engine (Madde 15-16),
+// Breakout/Retest FSM (Madde 20-21), f_riskCalc's stop/target formula
+// (Madde 44-46), f_breakoutRetestEligible (Madde 19), and the MTF module's
+// non-repainting HTF pattern (Madde 28-29), when the MTF filter is enabled.
+// =============================================================================
+
+strategy("BTC PRO Strategy Pretest - Breakout Retest",
+     shorttitle = "BTC-RETEST",
+     overlay = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.10,
+     slippage = 10,
+     process_orders_on_close = true,
+     max_bars_back = 500)
+
+// -----------------------------------------------------------------------------
+// ENUMS + PURE HELPERS (verbatim ports from btc_pro_analysis_engine.pine -
+// same field names/logic, Madde 111. Trimmed to only what Breakout Retest
+// + fixed stop/target actually needs - no Price Action/Momentum/
+// Participation/other archetypes.)
+// -----------------------------------------------------------------------------
+enum RegimeType
+    BULL_TREND
+    BEAR_TREND
+    RANGE
+    TRANSITION
+
+enum ConfidenceLevel
+    LOW
+    MEDIUM
+    HIGH
+
+enum SwingLabel
+    NONE
+    HH
+    LH
+    HL
+    LL
+
+enum StructureBias
+    NEUTRAL
+    BULLISH
+    BEARISH
+
+enum BreakoutDirection
+    NONE
+    UP
+    DOWN
+
+enum BreakoutFSMState
+    PRE_BREAKOUT
+    BREAKOUT_CANDIDATE
+    CONFIRMED_BREAKOUT
+    RETEST_PENDING
+    ENTRY
+    FAILED_BREAKOUT
+    REVERSAL_CANDIDATE
+    STALE
+
+f_isIdleBreakoutState(BreakoutFSMState s) =>
+    s == BreakoutFSMState.PRE_BREAKOUT or s == BreakoutFSMState.STALE or
+     s == BreakoutFSMState.FAILED_BREAKOUT or s == BreakoutFSMState.REVERSAL_CANDIDATE or
+     s == BreakoutFSMState.ENTRY
+
+f_breakoutRetestEligible(BreakoutDirection dir, RegimeType regime) =>
+    dir == BreakoutDirection.UP   ? (regime == RegimeType.BULL_TREND or regime == RegimeType.TRANSITION) :
+     dir == BreakoutDirection.DOWN ? (regime == RegimeType.BEAR_TREND or regime == RegimeType.TRANSITION) :
+     false
+
+f_breakoutStateLabel(BreakoutFSMState s) =>
+    switch s
+        BreakoutFSMState.PRE_BREAKOUT       => "PRE_BREAKOUT"
+        BreakoutFSMState.BREAKOUT_CANDIDATE => "BREAKOUT_CANDIDATE"
+        BreakoutFSMState.CONFIRMED_BREAKOUT => "CONFIRMED_BREAKOUT"
+        BreakoutFSMState.RETEST_PENDING     => "RETEST_PENDING"
+        BreakoutFSMState.ENTRY              => "ENTRY"
+        BreakoutFSMState.FAILED_BREAKOUT    => "FAILED_BREAKOUT"
+        BreakoutFSMState.REVERSAL_CANDIDATE => "REVERSAL_CANDIDATE"
+        BreakoutFSMState.STALE              => "STALE"
+        =>                                      "UNKNOWN"
+
+f_regimeLabel(RegimeType r) =>
+    switch r
+        RegimeType.BULL_TREND => "BULL_TREND"
+        RegimeType.BEAR_TREND => "BEAR_TREND"
+        RegimeType.RANGE      => "RANGE"
+        RegimeType.TRANSITION => "TRANSITION"
+        =>                        "UNKNOWN"
+
+type Zone
+    float zoneHigh
+    float zoneLow
+    int   createdBar
+    int   knownBar
+    int   lastTouchBar
+    int   touchCount
+    bool  broken
+    int   brokenBar
+
+f_upsertZone(array<Zone> zones, float zHigh, float zLow, int swingBar, int knownBar, float atrVal, float clusterMult, int maxZones) =>
+    float newCenter = (zHigh + zLow) / 2
+    int mergedIndex = -1
+    if atrVal > 0 and array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                float zCenter = (z.zoneHigh + z.zoneLow) / 2
+                if math.abs(newCenter - zCenter) <= atrVal * clusterMult
+                    mergedIndex := i
+                    break
+    if mergedIndex >= 0
+        Zone existing = array.get(zones, mergedIndex)
+        existing.zoneHigh := math.max(existing.zoneHigh, zHigh)
+        existing.zoneLow  := math.min(existing.zoneLow, zLow)
+        existing.touchCount := existing.touchCount + 1
+        existing.lastTouchBar := knownBar
+    else
+        Zone newZone = Zone.new(zoneHigh = zHigh, zoneLow = zLow, createdBar = swingBar, knownBar = knownBar, lastTouchBar = knownBar, touchCount = 1, broken = false, brokenBar = na)
+        array.push(zones, newZone)
+        if array.size(zones) > maxZones
+            array.remove(zones, 0)
+    true
+
+f_updateZones(array<Zone> zones, bool isResistance, float barHigh, float barLow, float barClose, int curBar) =>
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                bool touched = barHigh >= z.zoneLow and barLow <= z.zoneHigh
+                if touched and z.lastTouchBar != curBar
+                    z.touchCount := z.touchCount + 1
+                    z.lastTouchBar := curBar
+                if isResistance and barClose > z.zoneHigh
+                    z.broken := true
+                    z.brokenBar := curBar
+                if not isResistance and barClose < z.zoneLow
+                    z.broken := true
+                    z.brokenBar := curBar
+    true
+
+f_nearestZone(array<Zone> zones, float refPrice) =>
+    float bestDist = na
+    int bestIdx = -1
+    if array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if not z.broken
+                float center = (z.zoneHigh + z.zoneLow) / 2
+                float dist = math.abs(refPrice - center)
+                if na(bestDist) or dist < bestDist
+                    bestDist := dist
+                    bestIdx := i
+    bestIdx
+
+// Same RE10045/eager-ternary lesson as the main engine: array.get() only
+// reached through an `if idx >= 0` guard, never a ternary that would
+// evaluate it on -1.
+f_riskCalc(bool isLong, float entry, float stopRaw, float targetRaw, float atrVal, float atrBufferMult, float maxStopPct, float minRR) =>
+    bool alreadyBreached = not na(stopRaw) and (isLong ? entry <= stopRaw : entry >= stopRaw)
+    float stopLevel = na(stopRaw) or na(atrVal) ? na : (isLong ? stopRaw - atrVal * atrBufferMult : stopRaw + atrVal * atrBufferMult)
+    float stopDist = na(stopLevel) ? na : math.abs(entry - stopLevel)
+    bool stopTooWide = not na(stopDist) and entry > 0 and stopDist > entry * maxStopPct / 100
+    float rewardDist = na(targetRaw) ? na : math.abs(targetRaw - entry)
+    float rr = (alreadyBreached or na(stopDist) or stopDist <= 0 or na(rewardDist)) ? na : rewardDist / stopDist
+    bool rrOk = not na(rr) and rr >= minRR
+    string status = na(stopLevel) ? "NO STRUCTURAL STOP" :
+         alreadyBreached ? "ALREADY INVALIDATED" :
+         na(targetRaw) ? "NO TARGET ZONE" :
+         stopTooWide ? "STOP TOO WIDE" :
+         not rrOk ? "R:R BELOW MIN" :
+         "OK"
+    [stopLevel, targetRaw, stopDist, rewardDist, rr, status]
+
+// -----------------------------------------------------------------------------
+// INPUTS
+// -----------------------------------------------------------------------------
+grpRegime = "Market Regime"
+i_emaFastLen = input.int(20, "EMA Fast", minval = 1, group = grpRegime)
+i_emaMidLen  = input.int(50, "EMA Mid", minval = 1, group = grpRegime)
+i_emaSlowLen = input.int(200, "EMA Slow", minval = 1, group = grpRegime)
+i_slopeLookback = input.int(10, "EMA Mid Slope Lookback (bars)", minval = 1, group = grpRegime)
+i_adxLen = input.int(14, "ADX/DMI Length", minval = 1, group = grpRegime)
+i_adxTrendThreshold = input.float(20.0, "ADX Trend Threshold", minval = 1, group = grpRegime)
+i_rangeLookback = input.int(20, "Range Containment Lookback (bars)", minval = 2, group = grpRegime)
+i_rangeAtrThreshold = input.float(2.5, "Range Containment Threshold (band width / ATR)", minval = 0.5, group = grpRegime)
+i_regimeConfirmBars = input.int(3, "Regime Confirmation Bars (hysteresis)", minval = 1, group = grpRegime)
+i_volLookback = input.int(100, "ATR% Percentile Lookback (bars)", minval = 10, group = grpRegime)
+i_volExtremePct = input.float(90.0, "Extreme Vol Percentile Floor", minval = 0, maxval = 100, group = grpRegime)
+
+grpStructure = "Market Structure / Zones"
+i_pivotLeft  = input.int(5, "Pivot Left Bars", minval = 1, group = grpStructure)
+i_pivotRight = input.int(5, "Pivot Right Bars", minval = 1, group = grpStructure)
+i_maxZonesPerSide = input.int(6, "Max Zones per Side", minval = 1, maxval = 20, group = grpStructure)
+i_clusterAtrMult = input.float(1.0, "Cluster Merge Distance (x ATR)", minval = 0.1, group = grpStructure)
+
+grpBreakout = "Breakout / Retest FSM"
+i_confirmDisplacementAtrMult = input.float(0.5, "Confirm Displacement (x ATR)", minval = 0.05, group = grpBreakout)
+i_candidateMaxBars = input.int(10, "Candidate Timeout (bars)", minval = 1, group = grpBreakout)
+i_retestAtrMult = input.float(0.3, "Retest Touch Tolerance (x ATR)", minval = 0.05, group = grpBreakout)
+i_retestMaxBars = input.int(30, "Retest Timeout (bars since confirmed)", minval = 1, group = grpBreakout)
+
+grpRisk = "Risk - fixed initial stop/target only"
+i_riskAtrBufferMult = input.float(0.5, "Stop ATR Buffer (x ATR beyond structural level)", minval = 0, group = grpRisk)
+i_maxStopDistancePct = input.float(5.0, "Max Acceptable Stop Distance (% of price)", minval = 0.1, group = grpRisk)
+
+grpFilters = "Optional Filters (OFF by default - this first pretest measures the bare structural pattern)"
+i_useRRGate = input.bool(false, "Enable R:R Minimum Gate (Madde 47)", group = grpFilters)
+i_minRR = input.float(1.5, "Minimum R:R (only applied if gate enabled above)", minval = 0.1, group = grpFilters)
+i_useConfidenceGate = input.bool(false, "Enable Regime Confidence >= MEDIUM Gate (Madde 37 v3.1 EK)", group = grpFilters)
+i_useMtfGate = input.bool(false, "Enable MTF Conflict Veto (Madde 31/52)", group = grpFilters)
+i_mtfMode = input.string("AUTO", "MTF: HTF Selection", options = ["AUTO", "MANUAL"], group = grpFilters)
+i_mtfManualTf = input.timeframe("240", "MTF: Manual HTF (only used if AUTO is off)", group = grpFilters)
+i_mtfEmaLen = input.int(50, "MTF: HTF Trend EMA Length", minval = 1, group = grpFilters)
+i_mtfSlopeLookback = input.int(5, "MTF: HTF EMA Slope Lookback (HTF bars)", minval = 1, group = grpFilters)
+
+grpDisplay = "Display"
+i_showMarks = input.bool(true, "Show Breakout/Entry Markers", group = grpDisplay)
+
+// -----------------------------------------------------------------------------
+// MARKET REGIME (verbatim formula port, Madde 111)
+// -----------------------------------------------------------------------------
+atrValue = ta.atr(14)
+atrValid = not na(atrValue) and atrValue > 0
+sufficientHistory = bar_index >= 209
+
+emaFast = ta.ema(close, i_emaFastLen)
+emaMid  = ta.ema(close, i_emaMidLen)
+emaSlow = ta.ema(close, i_emaSlowLen)
+
+emaAlignmentBull = emaFast > emaMid and emaMid > emaSlow
+emaAlignmentBear = emaFast < emaMid and emaMid < emaSlow
+priceAboveAll = close > emaFast and close > emaMid and close > emaSlow
+priceBelowAll = close < emaFast and close < emaMid and close < emaSlow
+slopeUp   = emaMid > emaMid[i_slopeLookback]
+slopeDown = emaMid < emaMid[i_slopeLookback]
+
+[diPlus, diMinus, adxValue] = ta.dmi(i_adxLen, i_adxLen)
+diBullish   = diPlus > diMinus
+trendStrong = not na(adxValue) and adxValue >= i_adxTrendThreshold
+
+bullVotes = (emaAlignmentBull ? 1 : 0) + (priceAboveAll ? 1 : 0) + (slopeUp ? 1 : 0) + (diBullish ? 1 : 0)
+bearVotes = (emaAlignmentBear ? 1 : 0) + (priceBelowAll ? 1 : 0) + (slopeDown ? 1 : 0) + (not diBullish ? 1 : 0)
+
+rangeBandWidth = ta.highest(high, i_rangeLookback) - ta.lowest(low, i_rangeLookback)
+priceContained = atrValid and rangeBandWidth < atrValue * i_rangeAtrThreshold
+
+rawRegime = trendStrong and bullVotes >= 3 ? RegimeType.BULL_TREND :
+             trendStrong and bearVotes >= 3 ? RegimeType.BEAR_TREND :
+             not trendStrong and priceContained ? RegimeType.RANGE :
+             RegimeType.TRANSITION
+
+var RegimeType primaryRegime = RegimeType.TRANSITION
+var RegimeType pendingRegime = RegimeType.TRANSITION
+var int pendingBars  = 0
+var int barsInRegime = 0
+
+if barstate.isconfirmed and sufficientHistory and atrValid
+    pendingBars  := rawRegime == pendingRegime ? pendingBars + 1 : 1
+    pendingRegime := rawRegime
+    if pendingBars >= i_regimeConfirmBars and primaryRegime != pendingRegime
+        primaryRegime := pendingRegime
+        barsInRegime  := 1
+    else
+        barsInRegime := barsInRegime + 1
+
+atrPct     = atrValid ? (atrValue / close) * 100 : na
+atrPctRank = na(atrPct) ? na : ta.percentrank(atrPct, i_volLookback)
+extremeVol = not na(atrPctRank) and atrPctRank >= i_volExtremePct
+
+maxVotes = math.max(bullVotes, bearVotes)
+trendAgreementScore = maxVotes >= 4 ? 2 : maxVotes == 3 ? 1 : 0
+volStabilityScore   = extremeVol ? 0 : 1
+persistenceScore    = barsInRegime >= i_regimeConfirmBars * 2 ? 1 : 0
+confidenceScoreRaw  = trendAgreementScore + volStabilityScore + persistenceScore
+
+regimeConfidence = primaryRegime == RegimeType.TRANSITION ? ConfidenceLevel.LOW :
+                     confidenceScoreRaw >= 3 ? ConfidenceLevel.HIGH :
+                     confidenceScoreRaw == 2 ? ConfidenceLevel.MEDIUM :
+                     ConfidenceLevel.LOW
+
+// -----------------------------------------------------------------------------
+// CENTRAL CONFIRMED-SWING FUNCTION + ZONES (verbatim port, Madde 14/15/16)
+// -----------------------------------------------------------------------------
+pivotHighPrice = ta.pivothigh(i_pivotLeft, i_pivotRight)
+pivotLowPrice  = ta.pivotlow(i_pivotLeft, i_pivotRight)
+
+var float lastSwingHighPrice    = na
+var float prevSwingHighPrice    = na
+var float lastSwingLowPrice     = na
+var float prevSwingLowPrice     = na
+var StructureBias structureBias = StructureBias.NEUTRAL
+
+var array<Zone> resistanceZones = array.new<Zone>()
+var array<Zone> supportZones    = array.new<Zone>()
+
+crossedAboveLastHigh = ta.crossover(close, lastSwingHighPrice)
+crossedBelowLastLow  = ta.crossunder(close, lastSwingLowPrice)
+
+brokenHighLevel = lastSwingHighPrice
+brokenLowLevel  = lastSwingLowPrice
+
+if barstate.isconfirmed
+    if not na(pivotHighPrice)
+        prevSwingHighPrice := lastSwingHighPrice
+        lastSwingHighPrice := pivotHighPrice
+        zoneLowBoundHigh = math.max(open[i_pivotRight], close[i_pivotRight])
+        f_upsertZone(resistanceZones, pivotHighPrice, zoneLowBoundHigh, bar_index - i_pivotRight, bar_index, atrValue, i_clusterAtrMult, i_maxZonesPerSide)
+
+    if not na(pivotLowPrice)
+        prevSwingLowPrice := lastSwingLowPrice
+        lastSwingLowPrice := pivotLowPrice
+        zoneHighBoundLow = math.min(open[i_pivotRight], close[i_pivotRight])
+        f_upsertZone(supportZones, zoneHighBoundLow, pivotLowPrice, bar_index - i_pivotRight, bar_index, atrValue, i_clusterAtrMult, i_maxZonesPerSide)
+
+    if crossedAboveLastHigh
+        structureBias := StructureBias.BULLISH
+    if crossedBelowLastLow
+        structureBias := StructureBias.BEARISH
+
+    f_updateZones(resistanceZones, true, high, low, close, bar_index)
+    f_updateZones(supportZones, false, high, low, close, bar_index)
+
+nearestResIdx = f_nearestZone(resistanceZones, close)
+nearestSupIdx = f_nearestZone(supportZones, close)
+
+// -----------------------------------------------------------------------------
+// BREAKOUT / RETEST FSM (verbatim port, Madde 20-21)
+// -----------------------------------------------------------------------------
+var BreakoutFSMState breakoutState = BreakoutFSMState.PRE_BREAKOUT
+var BreakoutDirection breakoutDir  = BreakoutDirection.NONE
+var float breakoutLevel    = na
+var int   breakoutBar      = na
+var int   breakoutConfBar  = na
+var int   breakoutStateBar = na
+
+if barstate.isconfirmed
+    if crossedAboveLastHigh and f_isIdleBreakoutState(breakoutState)
+        breakoutState := BreakoutFSMState.BREAKOUT_CANDIDATE
+        breakoutDir := BreakoutDirection.UP
+        breakoutLevel := brokenHighLevel
+        breakoutBar := bar_index
+        breakoutConfBar := na
+        breakoutStateBar := bar_index
+    else if crossedBelowLastLow and f_isIdleBreakoutState(breakoutState)
+        breakoutState := BreakoutFSMState.BREAKOUT_CANDIDATE
+        breakoutDir := BreakoutDirection.DOWN
+        breakoutLevel := brokenLowLevel
+        breakoutBar := bar_index
+        breakoutConfBar := na
+        breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.BREAKOUT_CANDIDATE
+        candDisplacement = breakoutDir == BreakoutDirection.UP ? close - breakoutLevel : breakoutLevel - close
+        candFailed = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        if candFailed
+            breakoutState := BreakoutFSMState.FAILED_BREAKOUT
+            breakoutStateBar := bar_index
+        else if atrValid and candDisplacement >= atrValue * i_confirmDisplacementAtrMult
+            breakoutState := BreakoutFSMState.CONFIRMED_BREAKOUT
+            breakoutConfBar := bar_index
+            breakoutStateBar := bar_index
+        else if (bar_index - breakoutBar) > i_candidateMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.CONFIRMED_BREAKOUT
+        confFailed = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        touchedLevel = atrValid and (breakoutDir == BreakoutDirection.UP ?
+             low <= breakoutLevel + atrValue * i_retestAtrMult :
+             high >= breakoutLevel - atrValue * i_retestAtrMult)
+        if confFailed
+            breakoutState := BreakoutFSMState.FAILED_BREAKOUT
+            breakoutStateBar := bar_index
+        else if touchedLevel
+            breakoutState := BreakoutFSMState.RETEST_PENDING
+            breakoutStateBar := bar_index
+        else if not na(breakoutConfBar) and (bar_index - breakoutConfBar) > i_retestMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+    else if breakoutState == BreakoutFSMState.RETEST_PENDING
+        retestRejected = breakoutDir == BreakoutDirection.UP ? close < breakoutLevel : close > breakoutLevel
+        retestAccepted = breakoutDir == BreakoutDirection.UP ? close > breakoutLevel : close < breakoutLevel
+        if retestRejected
+            breakoutState := BreakoutFSMState.REVERSAL_CANDIDATE
+            breakoutStateBar := bar_index
+        else if retestAccepted
+            breakoutState := BreakoutFSMState.ENTRY
+            breakoutStateBar := bar_index
+        else if not na(breakoutConfBar) and (bar_index - breakoutConfBar) > i_retestMaxBars
+            breakoutState := BreakoutFSMState.STALE
+            breakoutStateBar := bar_index
+
+breakoutStateText = f_breakoutStateLabel(breakoutState) + (breakoutDir == BreakoutDirection.NONE ? "" : " " + (breakoutDir == BreakoutDirection.UP ? "UP" : "DOWN"))
+
+// -----------------------------------------------------------------------------
+// OPTIONAL FILTER: MTF (verbatim non-repainting pattern port, Madde 28-29).
+// Always computed (request.security must be called unconditionally at
+// global scope) - i_useMtfGate only decides whether it's USED as a gate.
+// -----------------------------------------------------------------------------
+chartTfSeconds = timeframe.in_seconds(timeframe.period)
+manualTfSeconds = timeframe.in_seconds(i_mtfManualTf)
+autoHtf = chartTfSeconds <= 900 ? "60" : chartTfSeconds <= 3600 ? "240" : chartTfSeconds <= 14400 ? "1D" : timeframe.period
+autoHtfAvailable = chartTfSeconds <= 14400
+mtfResolvedTf = i_mtfMode == "MANUAL" ? i_mtfManualTf : autoHtf
+mtfAvailable = i_mtfMode == "MANUAL" ? manualTfSeconds > chartTfSeconds : autoHtfAvailable
+
+[htfClose, htfEma, htfEmaSlopeRef] = request.security(syminfo.tickerid, mtfResolvedTf,
+     [close[1], ta.ema(close, i_mtfEmaLen)[1], ta.ema(close, i_mtfEmaLen)[i_mtfSlopeLookback + 1]],
+     lookahead = barmerge.lookahead_on)
+
+htfBiasRaw = htfClose > htfEma and htfEma > htfEmaSlopeRef ? StructureBias.BULLISH :
+     htfClose < htfEma and htfEma < htfEmaSlopeRef ? StructureBias.BEARISH :
+     StructureBias.NEUTRAL
+
+mtfConflict = mtfAvailable and htfBiasRaw != StructureBias.NEUTRAL and structureBias != StructureBias.NEUTRAL and htfBiasRaw != structureBias
+
+// -----------------------------------------------------------------------------
+// ENTRY / RISK - fixed initial stop + target only (Madde 44-46), computed
+// ONLY for the active breakout direction (not symmetric long/short - this
+// pretest only ever considers the setup the FSM actually produced).
+// -----------------------------------------------------------------------------
+entryTriggerBar = breakoutState == BreakoutFSMState.ENTRY and breakoutStateBar == bar_index
+isLongTrigger  = entryTriggerBar and breakoutDir == BreakoutDirection.UP
+isShortTrigger = entryTriggerBar and breakoutDir == BreakoutDirection.DOWN
+
+float stopRaw = na
+float targetRaw = na
+if isLongTrigger
+    if nearestSupIdx >= 0
+        stopRaw := array.get(supportZones, nearestSupIdx).zoneLow
+    else
+        stopRaw := lastSwingLowPrice
+    if nearestResIdx >= 0
+        targetRaw := array.get(resistanceZones, nearestResIdx).zoneLow
+else if isShortTrigger
+    if nearestResIdx >= 0
+        stopRaw := array.get(resistanceZones, nearestResIdx).zoneHigh
+    else
+        stopRaw := lastSwingHighPrice
+    if nearestSupIdx >= 0
+        targetRaw := array.get(supportZones, nearestSupIdx).zoneHigh
+
+effectiveMinRR = i_useRRGate ? i_minRR : 0.0
+[stopLevel, targetLevel, stopDist, rewardDist, rr, riskStatus] =
+     f_riskCalc(isLongTrigger, close, stopRaw, targetRaw, atrValue, i_riskAtrBufferMult, i_maxStopDistancePct, effectiveMinRR)
+
+regimeEligible = entryTriggerBar and f_breakoutRetestEligible(breakoutDir, primaryRegime)
+confidenceOk   = not i_useConfidenceGate or regimeConfidence != ConfidenceLevel.LOW
+mtfOk          = not i_useMtfGate or not mtfConflict
+riskOk         = riskStatus == "OK"
+
+canEnter = entryTriggerBar and regimeEligible and confidenceOk and mtfOk and riskOk and strategy.position_size == 0
+
+// -----------------------------------------------------------------------------
+// ORDER PLACEMENT - fixed stop/target snapshotted at entry (never recomputed
+// mid-trade, matching the main engine's own Position Lifecycle design).
+// -----------------------------------------------------------------------------
+var float posStop   = na
+var float posTarget = na
+
+if canEnter
+    posStop   := stopLevel
+    posTarget := targetLevel
+    if isLongTrigger
+        strategy.entry("Long", strategy.long)
+    else
+        strategy.entry("Short", strategy.short)
+
+if strategy.position_size != 0 and not na(posStop) and not na(posTarget)
+    if strategy.position_size > 0
+        strategy.exit("Exit Long", from_entry = "Long", stop = posStop, limit = posTarget)
+    else
+        strategy.exit("Exit Short", from_entry = "Short", stop = posStop, limit = posTarget)
+
+if strategy.position_size == 0
+    posStop   := na
+    posTarget := na
+
+// -----------------------------------------------------------------------------
+// VISUALS - minimal: EMAs, breakout level, entry markers, stop/target lines.
+// -----------------------------------------------------------------------------
+plot(emaFast, "EMA Fast", color = color.new(color.teal, 30))
+plot(emaMid,  "EMA Mid",  color = color.new(color.orange, 30))
+plot(emaSlow, "EMA Slow", color = color.new(color.purple, 30))
+
+plot(i_showMarks and not f_isIdleBreakoutState(breakoutState) ? breakoutLevel : na, "Breakout Level",
+     color = color.new(color.fuchsia, 40), style = plot.style_linebr, linewidth = 1)
+plot(i_showMarks and strategy.position_size != 0 ? posStop : na, "Position Stop",
+     color = color.new(color.red, 20), style = plot.style_linebr, linewidth = 1)
+plot(i_showMarks and strategy.position_size != 0 ? posTarget : na, "Position Target",
+     color = color.new(color.lime, 20), style = plot.style_linebr, linewidth = 1)
+
+if i_showMarks and canEnter
+    label.new(bar_index, isLongTrigger ? low : high, isLongTrigger ? "LONG" : "SHORT",
+         style = isLongTrigger ? label.style_label_up : label.style_label_down,
+         color = color.new(isLongTrigger ? color.lime : color.red, 0), textcolor = color.white, size = size.small)
+
+// -----------------------------------------------------------------------------
+// INFO TABLE - compact, on-chart sanity readout. The REAL results are
+// TradingView's own Strategy Tester tab (List of Trades / Performance
+// Summary) - this table exists only so you can see live status while
+// watching the chart. Madde 122's own project discipline (never trust a
+// small sample) applies here too: closed trade count is color-flagged red
+// below 30.
+// -----------------------------------------------------------------------------
+var table infoTable = table.new(position.top_right, 2, 7, border_width = 1)
+if barstate.islast
+    table.cell(infoTable, 0, 0, "BTC PRO PRETEST", text_size = size.small, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+    table.cell(infoTable, 1, 0, "Breakout Retest only", text_size = size.small, text_color = color.white, bgcolor = color.new(color.navy, 0), text_halign = text.align_left)
+
+    table.cell(infoTable, 0, 1, "REGIME", text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTable, 1, 1, f_regimeLabel(primaryRegime), text_size = size.small, text_halign = text.align_left)
+
+    table.cell(infoTable, 0, 2, "BREAKOUT STATE", text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTable, 1, 2, breakoutStateText, text_size = size.small, text_halign = text.align_left)
+
+    posText = strategy.position_size == 0 ? "FLAT" : (strategy.position_size > 0 ? "LONG " : "SHORT ") + str.tostring(math.abs(strategy.position_size), "#.####")
+    table.cell(infoTable, 0, 3, "POSITION", text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTable, 1, 3, posText, text_size = size.small, text_color = strategy.position_size == 0 ? color.gray : color.yellow, text_halign = text.align_left)
+
+    closedTrades = strategy.closedtrades
+    table.cell(infoTable, 0, 4, "CLOSED TRADES", text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTable, 1, 4, str.tostring(closedTrades) + (closedTrades < 30 ? "  under 30, do not interpret yet" : ""),
+         text_size = size.small, text_color = closedTrades < 30 ? color.red : color.lime, text_halign = text.align_left)
+
+    table.cell(infoTable, 0, 5, "NET PROFIT", text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTable, 1, 5, str.tostring(strategy.netprofit, "#.##") + "  (" + str.tostring(strategy.netprofit / strategy.initial_capital * 100, "#.##") + "%)",
+         text_size = size.small, text_color = strategy.netprofit >= 0 ? color.lime : color.red, text_halign = text.align_left)
+
+    winRate = closedTrades > 0 ? strategy.wintrades / closedTrades * 100 : na
+    table.cell(infoTable, 0, 6, "WIN RATE", text_size = size.small, text_halign = text.align_left)
+    table.cell(infoTable, 1, 6, na(winRate) ? "N/A" : str.tostring(winRate, "#.#") + "%", text_size = size.small, text_halign = text.align_left)
