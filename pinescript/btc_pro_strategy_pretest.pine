@@ -39,12 +39,16 @@
 //   - Position sizing: 100% of equity per trade, no leverage - Madde 48's
 //     spot/perpetual/MAX EXPOSURE nuances are explicitly out of scope here.
 //
-// EXECUTION COST HONESTY: commission and slippage are REAL, non-zero inputs
-// (default ~0.10% commission, matching OKX's typical taker fee; slippage in
-// ticks - TradingView's own strategy() parameter, whose $ impact depends on
-// syminfo.mintick for your exact chart/instrument, so the default is a
-// starting point, not a precise OKX-calibrated number - check it against
-// your chart's actual tick size and adjust if it looks too small/large).
+// EXECUTION COST HONESTY: commission and slippage are REAL, non-zero, fixed
+// in this declaration (0.10% commission, matching OKX's typical taker fee;
+// 10 ticks slippage). input.*() calls are NOT valid as default values inside
+// an indicator()/strategy()/library() declaration statement itself - that
+// was the actual bug behind three straight rounds of the same compile
+// errors, not any character corruption. To change these values, use
+// TradingView's own Strategy Tester -> Properties tab (Commission, Slippage
+// fields there override these), or edit the two numbers below directly.
+// Slippage is in ticks, so its $ impact depends on syminfo.mintick for your
+// exact chart/instrument - check it against your chart's actual tick size.
 //
 // SAME-BAR STOP/TARGET AMBIGUITY (Madde 57): TradingView's DEFAULT broker
 // emulator (Bar Magnifier OFF) can resolve a bar that touches BOTH the stop
@@ -72,8 +76,8 @@ strategy("BTC PRO Strategy Pretest - Breakout Retest",
      default_qty_type = strategy.percent_of_equity,
      default_qty_value = 100,
      commission_type = strategy.commission.percent,
-     commission_value = input.float(0.10, "Commission percent per side"),
-     slippage = input.int(10, "Slippage in ticks"),
+     commission_value = 0.10,
+     slippage = 10,
      process_orders_on_close = true,
      max_bars_back = 500)
 
